@@ -1,0 +1,27 @@
+{
+  "name": "bio-template",
+  "version": "1.0.0",
+  "description": "Template de arranque para casos de uso sobre BioCore. Todo en packages/core — sin paquetes de dominio separados.",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/core"
+  ],
+  "scripts": {
+    "build": "tsc --build && node packages/core/scripts/copy-assets.js && npm --prefix packages/dashboard run build",
+    "build:ts": "tsc --build && node packages/core/scripts/copy-assets.js",
+    "dev": "npm --prefix packages/dashboard run dev",
+    "dev:all": "concurrently \"tsc --build --watch\" \"npm --prefix packages/dashboard run dev\"",
+    "prod": "npm run build && node packages/core/dist/server/ProductionServer.js",
+    "start": "node packages/core/dist/server/ProductionServer.js",
+    "test": "vitest --run",
+    "validate-template": "tsx scripts/validate-template-contract.ts --root .",
+    "clean": "node -e \"const{rmSync}=require('fs');['packages/core/dist','packages/dashboard/dist'].forEach(d=>{try{rmSync(d,{recursive:true,force:true})}catch{}});console.log('Clean done')\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.2"
+  }
+}

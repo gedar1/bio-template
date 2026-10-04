@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+packages/*/node_modules/
+packages/dashboard/node_modules/
+
+# Build output
+packages/*/dist/
+packages/dashboard/dist/
+
+# Environment (NUNCA subir al repo)
+.env
+.env.local
+
+# Databases (runtime)
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# Logs
+*.log
+logs/
+
+# TypeScript
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/

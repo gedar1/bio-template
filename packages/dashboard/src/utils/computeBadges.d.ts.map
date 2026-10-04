@@ -1,0 +1,1 @@
+{"version":3,"file":"computeBadges.d.ts","sourceRoot":"","sources":["computeBadges.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EACV,iBAAiB,EACjB,SAAS,EACT,SAAS,EACV,MAAM,oBAAoB,CAAC;AAE5B,MAAM,WAAW,UAAU;IACzB,SAAS,EAAE,SAAS,CAAC;IACrB,IAAI,EAAE,SAAS,CAAC;CACjB;AAED;;;;GAIG;AACH,wBAAgB,aAAa,CAC3B,MAAM,EAAE,UAAU,EAAE,EACpB,aAAa,EAAE,SAAS,GACvB,iBAAiB,EAAE,CAwBrB"}

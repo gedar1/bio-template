@@ -1,0 +1,1 @@
+{"version":3,"file":"ErrorBoundary.types.d.ts","sourceRoot":"","sources":["ErrorBoundary.types.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,kBAAkB;IACjC,kDAAkD;IAClD,IAAI,EAAE,MAAM,CAAC;IACb,QAAQ,EAAE,KAAK,CAAC,SAAS,CAAC;CAC3B;AAED,MAAM,WAAW,kBAAkB;IACjC,QAAQ,EAAE,OAAO,CAAC;IAClB,KAAK,EAAE,KAAK,GAAG,IAAI,CAAC;CACrB"}

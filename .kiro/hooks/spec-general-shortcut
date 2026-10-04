@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "General Spec Shortcut",
+  "description": "Agrega automáticamente la referencia al spec General cuando escribes /general",
+  "version": "1",
+  "when": {
+    "type": "promptSubmit"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "El usuario escribió /general. Reemplaza /general con: siguiendo#[[file:specs/specifications-spec/GENERAL.md]] y ejecuta la instrucción completa"
+  }
+}

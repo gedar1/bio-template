@@ -1,0 +1,1 @@
+{"version":3,"file":"SectionNav.types.d.ts","sourceRoot":"","sources":["SectionNav.types.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,SAAS,EAAE,iBAAiB,EAAE,MAAM,uBAAuB,CAAC;AAE1E,MAAM,WAAW,eAAe;IAC9B,aAAa,EAAE,SAAS,CAAC;IACzB,QAAQ,EAAE,CAAC,OAAO,EAAE,SAAS,KAAK,IAAI,CAAC;IACvC,MAAM,CAAC,EAAE,iBAAiB,EAAE,CAAC;CAC9B"}

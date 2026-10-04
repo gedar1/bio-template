@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Update Docs After Task",
+  "description": "Después de completar una tarea de spec, revisa si los cambios realizados impactan algún documento existente en docs/_engine/data/ y actualiza los JSONs correspondientes (arquitectura, decisiones, flujos, etc.).",
+  "version": "1",
+  "when": {
+    "type": "postTaskExecution"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Revisa los archivos que modificaste en esta tarea. Si los cambios impactan la documentación existente en docs/_engine/data/ (arquitectura, flujos, decisiones, glosario, etc.), actualiza los JSONs correspondientes. Solo actualiza lo que cambió — no regeneres todo. Si no hay impacto en docs, no hagas nada."
+  }
+}

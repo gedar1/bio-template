@@ -1,0 +1,1 @@
+{"version":3,"file":"HealthPanel.types.d.ts","sourceRoot":"","sources":["HealthPanel.types.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,UAAU;IACzB,MAAM,EAAE,IAAI,GAAG,UAAU,GAAG,MAAM,CAAC;IACnC,MAAM,EAAE,MAAM,CAAC;IACf,OAAO,EAAE,MAAM,CAAC;IAChB,MAAM,EAAE,MAAM,CAAC,MAAM,EAAE,OAAO,CAAC,CAAC;CACjC"}

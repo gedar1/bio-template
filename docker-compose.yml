@@ -1,0 +1,44 @@
+services:
+  biocore:
+    build: .
+    container_name: biocore
+    ports:
+      - "3000:3000"
+    volumes:
+      - biocore-data:/app/data
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DATABASE_PATH=/app/data/biocore.db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
+      - OTEL_SERVICE_NAME=biocore
+    restart: unless-stopped
+    depends_on:
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: biocore-jaeger
+    ports:
+      - "16686:16686" # UI web → http://localhost:16686
+      - "4318:4318" # OTLP HTTP (receptor de spans)
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    restart: unless-stopped
+
+volumes:
+  biocore-data:

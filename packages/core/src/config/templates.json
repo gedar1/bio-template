@@ -1,0 +1,193 @@
+[
+  {
+    "id": "db-backup",
+    "name": "Database Backup",
+    "category": "memory",
+    "profile": "dev",
+    "description": "Periodic database backup via SQL dump",
+    "expectedOutcome": "Genera un dump SQL de la tabla especificada en la ruta de salida",
+    "steps": ["mutate:memory", "db_query", "mutate:filesystem", "write_file"],
+    "parameters": [
+      {
+        "key": "table",
+        "label": "Table name",
+        "type": "string",
+        "required": true,
+        "placeholder": "users"
+      },
+      {
+        "key": "outputPath",
+        "label": "Output path",
+        "type": "string",
+        "required": true,
+        "placeholder": "./backups/"
+      }
+    ],
+    "defaultIntervalMs": 3600000,
+    "usesLLM": false
+  },
+  {
+    "id": "git-sync",
+    "name": "Git Sync",
+    "category": "versioncontrol",
+    "profile": "dev",
+    "description": "Periodic git pull to keep repo updated",
+    "expectedOutcome": "Ejecuta git pull en la rama especificada para sincronizar cambios remotos",
+    "steps": ["mutate:versioncontrol", "git_pull"],
+    "parameters": [
+      {
+        "key": "branch",
+        "label": "Branch",
+        "type": "string",
+        "required": false,
+        "placeholder": "main"
+      }
+    ],
+    "defaultIntervalMs": 1800000,
+    "usesLLM": false
+  },
+  {
+    "id": "periodic-scrape",
+    "name": "Periodic Scraping",
+    "category": "sensory",
+    "profile": "dev",
+    "description": "Scrape a URL on schedule and store results",
+    "expectedOutcome": "Extrae el contenido de la URL y lo almacena para análisis posterior",
+    "steps": ["mutate:sensory", "scrape_url", "mutate:memory", "db_insert"],
+    "parameters": [
+      {
+        "key": "url",
+        "label": "Target URL",
+        "type": "url",
+        "required": true,
+        "placeholder": "https://example.com"
+      },
+      {
+        "key": "selector",
+        "label": "CSS Selector",
+        "type": "string",
+        "required": false,
+        "placeholder": ".content"
+      }
+    ],
+    "defaultIntervalMs": 900000,
+    "usesLLM": true
+  },
+  {
+    "id": "report-email",
+    "name": "Report Email",
+    "category": "communication",
+    "description": "Send periodic status report via email",
+    "expectedOutcome": "Genera y envía un reporte por email al destinatario configurado",
+    "steps": [
+      "mutate:memory",
+      "db_query",
+      "mutate:communication",
+      "send_email"
+    ],
+    "parameters": [
+      {
+        "key": "to",
+        "label": "Recipient",
+        "type": "string",
+        "required": true,
+        "placeholder": "admin@example.com"
+      },
+      {
+        "key": "subject",
+        "label": "Subject",
+        "type": "string",
+        "required": true,
+        "placeholder": "Daily Report"
+      }
+    ],
+    "defaultIntervalMs": 86400000,
+    "usesLLM": true
+  },
+  {
+    "id": "file-cleanup",
+    "name": "File Cleanup",
+    "category": "filesystem",
+    "profile": "dev",
+    "description": "Remove old files from a directory",
+    "expectedOutcome": "Elimina archivos más antiguos que el número de días especificado",
+    "steps": ["mutate:filesystem", "list_files", "delete_file"],
+    "parameters": [
+      {
+        "key": "directory",
+        "label": "Directory",
+        "type": "string",
+        "required": true,
+        "placeholder": "./tmp/"
+      },
+      {
+        "key": "maxAgeDays",
+        "label": "Max age (days)",
+        "type": "number",
+        "required": true,
+        "placeholder": "7"
+      }
+    ],
+    "defaultIntervalMs": 86400000,
+    "usesLLM": true
+  },
+  {
+    "id": "http-health-check",
+    "name": "HTTP Health Check",
+    "category": "monitor",
+    "description": "Check HTTP endpoint availability",
+    "expectedOutcome": "Verifica que el endpoint responda con el status HTTP esperado",
+    "steps": ["mutate:http", "http_get"],
+    "parameters": [
+      {
+        "key": "url",
+        "label": "Health URL",
+        "type": "url",
+        "required": true,
+        "placeholder": "https://api.example.com/health"
+      },
+      {
+        "key": "expectedStatus",
+        "label": "Expected status",
+        "type": "number",
+        "required": false,
+        "placeholder": "200"
+      }
+    ],
+    "defaultIntervalMs": 300000,
+    "usesLLM": false
+  },
+  {
+    "id": "create-monitor",
+    "name": "Crear Monitor",
+    "category": "monitor",
+    "description": "Registra una tarea recurrente que verifica una URL cada N minutos y alerta si falla",
+    "expectedOutcome": "Monitor creado — verificará el endpoint automáticamente en el intervalo configurado",
+    "steps": ["__monitor_add"],
+    "parameters": [
+      {
+        "key": "taskId",
+        "label": "ID del monitor",
+        "type": "string",
+        "required": true,
+        "placeholder": "monitor-mi-api"
+      },
+      {
+        "key": "url",
+        "label": "URL a monitorear",
+        "type": "url",
+        "required": true,
+        "placeholder": "https://mi-api.com/health"
+      },
+      {
+        "key": "intervalMs",
+        "label": "Intervalo (minutos)",
+        "type": "number",
+        "required": true,
+        "placeholder": "5"
+      }
+    ],
+    "defaultIntervalMs": 0,
+    "usesLLM": false
+  }
+]

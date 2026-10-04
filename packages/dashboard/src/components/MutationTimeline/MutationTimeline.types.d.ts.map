@@ -1,0 +1,1 @@
+{"version":3,"file":"MutationTimeline.types.d.ts","sourceRoot":"","sources":["MutationTimeline.types.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,qBAAqB;IACpC,QAAQ,EAAE,MAAM,CAAC;CAClB;AAED,MAAM,MAAM,SAAS,GAAG,IAAI,GAAG,KAAK,GAAG,IAAI,GAAG,KAAK,CAAC;AAEpD,MAAM,WAAW,mBAAmB;IAClC,QAAQ,EAAE,MAAM,CAAC;IACjB,SAAS,EAAE,SAAS,CAAC;CACtB"}

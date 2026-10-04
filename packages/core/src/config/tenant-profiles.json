@@ -1,0 +1,20 @@
+{
+  "profiles": {
+    "dev": {
+      "description": "Desarrollo de software — scraping, BD, filesystem, Git, HTTP, CLI",
+      "allowedCells": [
+        "sensory",
+        "memory",
+        "filesystem",
+        "versioncontrol",
+        "http",
+        "system",
+        "communication",
+        "monitor",
+        "realtime"
+      ],
+      "agentFile": "dev-agent.md"
+    }
+  },
+  "defaultProfile": "dev"
+}

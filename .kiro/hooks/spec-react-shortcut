@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "React Spec Shortcut",
+  "description": "Agrega automáticamente la referencia al spec de React cuando escribes /react",
+  "version": "1",
+  "when": {
+    "type": "promptSubmit"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "El usuario escribió /react. Reemplaza /react con: siguiendo #[[file:specs/specifications-spec/REACT.md]] y ejecuta la instrucción completa"
+  }
+}

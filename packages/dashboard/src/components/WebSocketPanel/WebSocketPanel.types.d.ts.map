@@ -1,0 +1,1 @@
+{"version":3,"file":"WebSocketPanel.types.d.ts","sourceRoot":"","sources":["WebSocketPanel.types.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,mBAAmB,EAAE,MAAM,uBAAuB,CAAC;AAEjE,MAAM,WAAW,mBAAmB;IAClC,QAAQ,EAAE,MAAM,CAAC;CAClB;AAED,MAAM,WAAW,oBAAoB;IACnC,OAAO,EAAE,mBAAmB,EAAE,CAAC;IAC/B,KAAK,CAAC,EAAE,MAAM,CAAC;CAChB"}

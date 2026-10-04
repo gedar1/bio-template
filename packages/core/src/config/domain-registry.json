@@ -1,0 +1,17 @@
+{
+  "_comment": "Registry de tu dominio. Define aquí los tipos de célula específicos de tu caso de uso. Este archivo se fusiona con config/registry.json (core) automáticamente al arrancar. Cambia 'example' al nombre de tu célula y ajusta las tools para que coincidan con los métodos públicos de tu Molécula.",
+  "cells": [
+    {
+      "type": "example",
+      "_comment": "Cambia 'example' al nombre de tu célula. Ej: 'orders', 'alerts', 'contracts'",
+      "description": "Gestión de registros del dominio: crear, listar, actualizar, eliminar.",
+      "tools": [
+        "create_record",
+        "get_record",
+        "list_records",
+        "update_record_status",
+        "delete_record"
+      ]
+    }
+  ]
+}

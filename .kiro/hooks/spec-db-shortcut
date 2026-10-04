@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Database Spec Shortcut",
+  "description": "Agrega automáticamente la referencia al spec de Database cuando escribes /db",
+  "version": "1",
+  "when": {
+    "type": "promptSubmit"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "El usuario escribió /db. Reemplaza /db con: siguiendo #[[file:specs/specifications-spec/DATABASE.md]] y ejecuta la instrucción completa"
+  }
+}

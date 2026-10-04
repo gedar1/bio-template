@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Validate Template Contract After Relevant Task",
+  "description": "Después de una tarea, valida el contrato portable solo si los archivos del template kit fueron afectados.",
+  "version": "1",
+  "when": {
+    "type": "postTaskExecution"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Revisa los archivos afectados por la tarea. Si cambiaron scripts/validate-template-contract.ts, scripts/sync-template.ts, package.json, .kiro/steering, .kiro/hooks o archivos del layout de bio-template, ejecuta npm run validate-template y reporta errores claros. Si no hay cambios relevantes para el template kit, no ejecutes validaciones. No ejecutes la suite completa ni validaciones en cada guardado. Nunca leas ni incluyas .env, *.db, data/ o dist/ en la inspección."
+  }
+}

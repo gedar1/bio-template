@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Node Spec Shortcut",
+  "description": "Agrega automáticamente la referencia al spec de Node cuando escribes /node",
+  "version": "1",
+  "when": {
+    "type": "promptSubmit"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "El usuario escribió /node. Reemplaza /node con: siguiendo #[[file:specs/specifications-spec/NODE.md]] y ejecuta la instrucción completa"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Python Spec Shortcut",
+  "description": "Agrega automáticamente la referencia al spec de Python cuando escribes /python",
+  "version": "1",
+  "when": {
+    "type": "promptSubmit"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "El usuario escribió /python. Reemplaza /python con: siguiendo #[[file:specs/specifications-spec/PYTHON.md]] y ejecuta la instrucción completa"
+  }
+}
