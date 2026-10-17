@@ -93,7 +93,7 @@ BioCore implementa **memoria procedural** — el sistema aprende qué secuencia 
 Input usuario
    ↓ normalizeForEmbedding()  ← elimina URLs/emails/IPs concretas
    ↓ computeEmbedding()       ← vector 384 dims, modelo multilingüe, $0
-   ↓ HNSW vector index        ← búsqueda O(log n) con fallback lineal
+   ↓ HNSW opcional                ← búsqueda O(log n), fallback lineal O(n)
    ↓ compositeScore           ← similarity × temporalDecay × reliabilityBoost
    ↓
 ┌─────────────────────────────────────────────────────────────┐
