@@ -5,7 +5,14 @@
 
 // ─── Enums / Literal Types ──────────────────────────────────────────────────
 
-export type LLMProviderName = "gemini" | "claude" | "nvidia";
+export type {
+  LLMProviderName,
+  LLMProviderConfig,
+} from "../../config/llmTypes.js";
+import type {
+  LLMProviderName,
+  LLMProviderConfig,
+} from "../../config/llmTypes.js";
 
 export type ApiKeyStatus = "configured" | "missing" | "invalid_format";
 
@@ -19,11 +26,6 @@ export interface SettingMetadata {
 }
 
 // ─── LLM Provider Configuration ─────────────────────────────────────────────
-
-export interface LLMProviderConfig {
-  primaryProvider: LLMProviderName;
-  fallbackOrder: LLMProviderName[];
-}
 
 // ─── Circuit Breaker Info ───────────────────────────────────────────────────
 

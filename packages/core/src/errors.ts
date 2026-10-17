@@ -1,15 +1,9 @@
 /**
  * Jerarquía de errores de BioCore.
  * Cada error tiene un código único para identificación en logs y API responses.
- *
- * BioCoreError
- * ├── MutationError        — fallos al mutar células
- * ├── ToolExecutionError   — fallos al ejecutar herramientas MCP
- * ├── ProviderError        — fallos de LLM (Claude, Gemini)
- * ├── ValidationError      — inputs inválidos (Zod, schemas)
- * ├── TenantError          — problemas de multi-tenancy
- * └── MoleculeError        — fallos en moléculas (DB, HTTP, etc.)
  */
+
+import type { LLMProviderName } from "./config/llmTypes.js";
 
 export class BioCoreError extends Error {
   readonly code: string;
@@ -50,14 +44,124 @@ export class ToolExecutionError extends BioCoreError {
   }
 }
 
+export type ProviderErrorCategory =
+  | "authentication"
+  | "rate_limit"
+  | "timeout"
+  | "network"
+  | "malformed_response"
+  | "missing_key"
+  | "circuit_open"
+  | "cancelled"
+  | "unavailable"
+  | "internal";
+
+export interface ProviderAttempt {
+  readonly provider: LLMProviderName | "all";
+  readonly category: ProviderErrorCategory;
+  readonly status?: number;
+  readonly message: string;
+}
+
+export interface ProviderErrorOptions {
+  readonly status?: number;
+  readonly retryable?: boolean;
+  readonly safeContext?: Readonly<Record<string, unknown>>;
+  readonly attempts?: readonly ProviderAttempt[];
+}
+
 export class ProviderError extends BioCoreError {
+  readonly provider: LLMProviderName | "all";
+  readonly category: ProviderErrorCategory;
+  readonly status?: number;
+  readonly retryable: boolean;
+  readonly safeContext: Readonly<Record<string, unknown>>;
+  readonly attempts?: readonly ProviderAttempt[];
+
   constructor(
-    provider: string,
+    provider: LLMProviderName | "all",
     message: string,
-    context?: Record<string, any>,
+    context?: Record<string, unknown>,
+  );
+  constructor(
+    provider: LLMProviderName | "all",
+    category: ProviderErrorCategory,
+    message: string,
+    options?: ProviderErrorOptions,
+  );
+  constructor(
+    provider: LLMProviderName | "all",
+    categoryOrMessage: string,
+    messageOrContext?: string | Record<string, unknown>,
+    options: ProviderErrorOptions = {},
   ) {
-    super(message, "PROVIDER_ERROR", { provider, ...context });
+    const isCategory = [
+      "authentication",
+      "rate_limit",
+      "timeout",
+      "network",
+      "malformed_response",
+      "missing_key",
+      "circuit_open",
+      "cancelled",
+      "unavailable",
+      "internal",
+    ].includes(categoryOrMessage);
+    const category = isCategory
+      ? (categoryOrMessage as ProviderErrorCategory)
+      : "internal";
+    const message =
+      isCategory && typeof messageOrContext === "string"
+        ? messageOrContext
+        : categoryOrMessage;
+    const legacyContext =
+      !isCategory && isRecordContext(messageOrContext)
+        ? messageOrContext
+        : undefined;
+    const merged = legacyContext ?? options.safeContext;
+    super(message, "PROVIDER_ERROR", { provider, category, ...(merged ?? {}) });
     this.name = "ProviderError";
+    this.provider = provider;
+    this.category = category;
+    this.status = options.status;
+    this.retryable =
+      options.retryable ??
+      [
+        "authentication",
+        "rate_limit",
+        "timeout",
+        "network",
+        "malformed_response",
+        "missing_key",
+        "unavailable",
+        "circuit_open",
+      ].includes(category);
+    this.safeContext = merged ?? {};
+    this.attempts = options.attempts;
+  }
+
+  override toJSON() {
+    return {
+      error: this.name,
+      code: this.code,
+      message: this.message,
+      provider: this.provider,
+      category: this.category,
+      ...(this.status !== undefined ? { status: this.status } : {}),
+      retryable: this.retryable,
+      ...(this.attempts ? { attempts: this.attempts } : {}),
+    };
+  }
+}
+
+function isRecordContext(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export class CircuitOpenError extends BioCoreError {
+  constructor(provider: string) {
+    super(`Circuito abierto para ${provider}`, "CIRCUIT_OPEN", { provider });
+    this.name = "CircuitOpenError";
   }
 }
 
