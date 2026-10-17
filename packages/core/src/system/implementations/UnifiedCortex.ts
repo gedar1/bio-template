@@ -1,841 +1,655 @@
 import { initTelemetry, createLogger } from "../../config/logger.js";
-initTelemetry(); // debe ser lo primero, antes de cualquier componente
+initTelemetry();
 
-import Anthropic from "@anthropic-ai/sdk";
-import axios from "axios";
-import type { AxiosResponse } from "axios";
 import {
-  GoogleGenerativeAI,
-  HarmCategory,
-  HarmBlockThreshold,
-} from "@google/generative-ai";
-import * as dotenv from "dotenv";
-import { fileURLToPath } from "node:url";
-import { BaseOrchestrator } from "../BaseOrchestrator.js";
+  BaseOrchestrator,
+  type OrchestratorOptions,
+} from "../BaseOrchestrator.js";
 import { CircuitBreaker } from "../../infrastructure/CircuitBreaker.js";
-import { ProviderError } from "../../errors.js";
 import {
-  chooseModel,
-  formatToolsForAnthropic,
-  formatToolsForGemini,
-  formatToolsForOpenAI,
-  preCellRoute,
-} from "../../atoms/index.js";
-import type { RouterHistoryEntry } from "../../atoms/index.js";
-import type {
-  LLMProviderName,
-  LLMProviderConfig,
-} from "../../server/types/settings.js";
-import type { UsageMetricsCollector } from "../../server/services/UsageMetricsCollector.js";
-import type { TenantRegistryService } from "../../server/services/TenantRegistryService.js";
-
-dotenv.config();
+  CircuitOpenError,
+  GuardrailBlockedError,
+  MutationError,
+  ProviderError,
+  ToolExecutionError,
+  ValidationError,
+} from "../../errors.js";
+import { preCellRoute } from "../../atoms/cellRouter.js";
+import type { RouterHistoryEntry } from "../../atoms/cellRouter.js";
+import {
+  DEFAULT_LLM_PROVIDER_CONFIG,
+  LLMProviderNameSchema,
+  type LLMProviderConfig,
+  type LLMProviderName,
+} from "../../config/llmTypes.js";
+import {
+  createProviderFactory,
+  type ProviderFactory,
+} from "../providers/providerFactory.js";
+import type { ILLMProvider } from "../providers/ILLMProvider.js";
+import {
+  normalizeTools,
+  normalizeLLMRequest,
+  type LLMMessage,
+  type LLMRequest,
+  type LLMResponse,
+  type LLMStreamEvent,
+  type LLMToolCall,
+} from "../providers/index.js";
+import type { ILogger } from "../../config/ILogger.js";
+import type { IUsageMetricsSink } from "../interfaces/IUsageMetricsSink.js";
+import type { ITenantTokenLimitReader } from "../interfaces/ITenantTokenLimitReader.js";
 
 const log = createLogger("UnifiedCortex");
+const MAX_ITERATIONS = 10;
 
-/**
- * UnifiedCortex - Cortex maestro con Circuit Breakers por modelo.
- * Si un LLM falla repetidamente, el circuito se abre y se usa el fallback automáticamente.
- */
+type BreakerMap = ReadonlyMap<LLMProviderName, CircuitBreaker>;
+
+export interface UnifiedCortexOptions extends OrchestratorOptions {
+  readonly tenantId?: string;
+  readonly primaryProvider?: LLMProviderName;
+  readonly fallbackOrder?: readonly LLMProviderName[];
+  readonly providers?: ReadonlyMap<LLMProviderName, ILLMProvider>;
+  readonly providerFactory?: ProviderFactory;
+  readonly providerEnv?: Readonly<Record<string, string | undefined>>;
+  readonly metrics?: IUsageMetricsSink;
+  readonly tenantLimits?: ITenantTokenLimitReader;
+  readonly singleProvider?: boolean;
+}
+
+interface StreamResult {
+  readonly deltas: readonly string[];
+  readonly response: LLMResponse;
+}
+
 export class UnifiedCortex extends BaseOrchestrator {
-  readonly anthropic: Anthropic;
-  readonly genAI: GoogleGenerativeAI;
-
   readonly claudeBreaker: CircuitBreaker;
   readonly geminiBreaker: CircuitBreaker;
   readonly nvidiaBreaker: CircuitBreaker;
+  readonly summarizerBreaker: CircuitBreaker;
 
-  private readonly nvidiaApiKey: string;
-  private readonly nvidiaBaseUrl: string;
-  private readonly nvidiaModel: string;
+  private readonly providers: ReadonlyMap<LLMProviderName, ILLMProvider>;
+  private readonly breakers: BreakerMap;
+  private tenantId: string | null;
+  private metrics: IUsageMetricsSink | null;
+  private tenantLimits: ITenantTokenLimitReader | null;
+  private readonly singleProvider: boolean;
+  private providerConfig: LLMProviderConfig;
+  private sessionActive = false;
+  private pendingConfig: LLMProviderConfig | null = null;
 
-  /** Current LLM provider configuration (primary + fallback chain) */
-  private readonly _providerConfig: LLMProviderConfig;
+  constructor(options: UnifiedCortexOptions = {}) {
+    super(options);
+    this.tenantId = options.tenantId ?? null;
+    this.metrics = options.metrics ?? null;
+    this.tenantLimits = options.tenantLimits ?? null;
+    this.singleProvider = options.singleProvider ?? false;
 
-  /** Whether a chat session is currently active (streaming/processing) */
-  private _sessionActive = false;
+    const factory =
+      options.providerFactory ??
+      createProviderFactory({
+        env: options.providerEnv,
+        logger: options.logger,
+      });
+    this.providers = options.providers ?? factory({ env: options.providerEnv });
 
-  /** Pending reconfiguration to apply once the current session completes */
-  private _pendingConfig: Partial<LLMProviderConfig> | null = null;
-
-  /** Optional metrics collector for recording usage per tenant */
-  private _metricsCollector: UsageMetricsCollector | null = null;
-
-  /** Optional tenant registry for checking token limits */
-  private _tenantRegistry: TenantRegistryService | null = null;
-
-  /** Tenant ID associated with this cortex instance (for metrics) */
-  private _tenantId: string | null = null;
-
-  constructor() {
-    super("UNIFIED-CORTEX-SESSION");
-
-    this.anthropic = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY || "",
-    });
-    this.genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || "");
-
-    this.nvidiaApiKey = process.env.NVIDIA_API_KEY || "";
-    this.nvidiaBaseUrl =
-      process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1";
-    this.nvidiaModel =
-      process.env.NVIDIA_MODEL || "nvidia/llama-3.3-nemotron-super-49b-v1";
-
-    this.claudeBreaker = new CircuitBreaker({
-      name: "claude",
+    const makeBreaker = (provider: LLMProviderName): CircuitBreaker =>
+      new CircuitBreaker({
+        name: provider,
+        failureThreshold: 3,
+        resetTimeout: 60_000,
+        logger: options.logger,
+        onOpen: () => log.warn(`${provider} circuit OPEN`),
+        onClose: () => log.info(`${provider} circuit CLOSED`),
+      });
+    this.claudeBreaker = makeBreaker("claude");
+    this.geminiBreaker = makeBreaker("gemini");
+    this.nvidiaBreaker = makeBreaker("nvidia");
+    this.summarizerBreaker = new CircuitBreaker({
+      name: "claude-summarizer",
       failureThreshold: 3,
-      resetTimeout: 60000,
-      onOpen: () => log.warn("Claude circuit OPEN"),
-      onClose: () => log.info("Claude circuit CLOSED"),
+      resetTimeout: 60_000,
+      logger: options.logger,
+    });
+    this.breakers = new Map([
+      ["claude", this.claudeBreaker],
+      ["gemini", this.geminiBreaker],
+      ["nvidia", this.nvidiaBreaker],
+    ]);
+
+    this.providerConfig = this.normalizeConfig({
+      primaryProvider:
+        options.primaryProvider ?? DEFAULT_LLM_PROVIDER_CONFIG.primaryProvider,
+      fallbackOrder: [
+        ...(options.fallbackOrder ?? DEFAULT_LLM_PROVIDER_CONFIG.fallbackOrder),
+      ],
     });
 
-    this.geminiBreaker = new CircuitBreaker({
-      name: "gemini",
-      failureThreshold: 3,
-      resetTimeout: 60000,
-      onOpen: () => log.warn("Gemini circuit OPEN"),
-      onClose: () => log.info("Gemini circuit CLOSED"),
-    });
-
-    this.nvidiaBreaker = new CircuitBreaker({
-      name: "nvidia",
-      failureThreshold: 3,
-      resetTimeout: 60000,
-      onOpen: () => log.warn("NVIDIA circuit OPEN"),
-      onClose: () => log.info("NVIDIA circuit CLOSED"),
-    });
-
-    // Initialize provider config with default chain
-    this._providerConfig = {
-      primaryProvider: "gemini",
-      fallbackOrder: ["claude", "nvidia"],
-    };
-
-    // Summarizer: usa Claude Haiku (modelo barato) para generar resúmenes reales
-    // del historial antiguo en lugar de truncar texto a 100 caracteres.
-    // Solo se activa si hay API key de Anthropic configurada.
-    if (process.env.ANTHROPIC_API_KEY) {
+    const claude = this.providers.get("claude");
+    if (claude) {
       this.setSummarizer(async (messages) => {
-        const content = messages
-          .map((m) => `${m.role}: ${m.content.substring(0, 300)}`)
-          .join("\n");
-        const res = await this.anthropic.messages.create({
-          model: "claude-haiku-4-5",
-          max_tokens: 400,
-          messages: [
-            {
-              role: "user",
-              content: `Resume en 4-6 oraciones los puntos clave de esta conversación para que un asistente IA mantenga contexto:\n\n${content}`,
-            },
-          ],
-        });
-        return res.content[0].type === "text" ? res.content[0].text : "";
+        const response = await this.summarizerBreaker.execute(() =>
+          claude.complete({
+            messages,
+            tools: [],
+            model: "claude-haiku-4-5",
+            maxTokens: 400,
+          }),
+        );
+        return response.text;
       });
     }
   }
 
-  private async getAnthropicTools(): Promise<Anthropic.Tool[]> {
-    const unified = await this.getUnifiedTools();
-    return formatToolsForAnthropic(unified) as Anthropic.Tool[];
-  }
-
-  private async getGeminiTools() {
-    const unified = await this.getUnifiedTools();
-    return formatToolsForGemini(unified);
-  }
-
-  private async getNvidiaTools(): Promise<any[]> {
-    const unified = await this.getUnifiedTools();
-    return formatToolsForOpenAI(unified);
-  }
-
-  private getModelName(): string {
-    return process.env.GEMINI_MODEL || "gemini-2.5-flash";
-  }
-
-  // ─── Hot-Reload Configuration Methods ───────────────────────────────────────
-
-  /**
-   * Reconfigures the LLM provider chain at runtime (hot-reload).
-   * If a session is currently active, queues the change until the session completes.
-   */
-  public reconfigure(config: {
-    primaryProvider?: LLMProviderName;
-    fallbackOrder?: LLMProviderName[];
-  }): void {
-    if (this._sessionActive) {
-      log.info({ config }, "Session active — queuing provider reconfiguration");
-      const pending: Partial<LLMProviderConfig> = { ...this._pendingConfig };
-      if (config.primaryProvider) {
-        pending.primaryProvider = config.primaryProvider;
-      }
-      if (config.fallbackOrder) {
-        pending.fallbackOrder = config.fallbackOrder;
-      }
-      this._pendingConfig = pending;
+  public reconfigure(config: Partial<LLMProviderConfig>): void {
+    const baseConfig = this.pendingConfig ?? this.providerConfig;
+    const next = this.normalizeConfig({
+      primaryProvider: config.primaryProvider ?? baseConfig.primaryProvider,
+      fallbackOrder: config.fallbackOrder ?? baseConfig.fallbackOrder,
+    });
+    if (this.sessionActive) {
+      this.pendingConfig = next;
       return;
     }
-
-    this.applyConfig(config);
+    this.providerConfig = next;
   }
 
-  /**
-   * Returns whether a chat session is currently in progress.
-   */
   public isSessionActive(): boolean {
-    return this._sessionActive;
+    return this.sessionActive;
   }
 
-  /**
-   * Returns the current LLM provider configuration.
-   */
   public getProviderConfig(): LLMProviderConfig {
-    return { ...this._providerConfig };
+    return {
+      primaryProvider: this.providerConfig.primaryProvider,
+      fallbackOrder: [...this.providerConfig.fallbackOrder],
+    };
   }
 
-  /**
-   * Applies provider config changes immediately.
-   */
-  private applyConfig(config: Partial<LLMProviderConfig>): void {
-    if (config.primaryProvider) {
-      this._providerConfig.primaryProvider = config.primaryProvider;
-    }
-    if (config.fallbackOrder) {
-      this._providerConfig.fallbackOrder = [...config.fallbackOrder];
-    }
-    log.info(
-      {
-        primary: this._providerConfig.primaryProvider,
-        fallback: this._providerConfig.fallbackOrder,
-      },
-      "Provider config updated",
-    );
+  public getCircuitBreakers(): BreakerMap {
+    return this.breakers;
   }
 
-  /**
-   * Flushes any pending reconfiguration queued during an active session.
-   * Called automatically when a session ends.
-   */
-  private flushPendingConfig(): void {
-    if (this._pendingConfig) {
-      log.info("Applying queued provider reconfiguration");
-      this.applyConfig(this._pendingConfig);
-      this._pendingConfig = null;
-    }
-  }
-
-  // ─── Metrics Collector Integration ────────────────────────────────────────
-
-  /**
-   * Sets the optional metrics collector for recording token usage and errors.
-   * No-op behavior if not set — the cortex works identically without it.
-   *
-   * @param collector - UsageMetricsCollector instance
-   * @param tenantId - Tenant ID to associate with this cortex's metrics
-   */
   public setMetricsCollector(
-    collector: UsageMetricsCollector,
+    metrics: IUsageMetricsSink,
     tenantId: string,
   ): void {
-    this._metricsCollector = collector;
-    this._tenantId = tenantId;
-    log.debug({ tenantId }, "Metrics collector configured for cortex");
+    this.metrics = metrics;
+    this.tenantId = tenantId;
   }
 
-  /**
-   * Safely records a metric event. No-op if no collector is set.
-   * Catches and logs any errors to avoid disrupting normal operation.
-   */
-  private recordMetric(
-    eventType: "tokens" | "task_completed" | "task_error" | "cortex_error",
-    value: number,
-  ): void {
-    if (!this._metricsCollector || !this._tenantId) return;
-    try {
-      this._metricsCollector.record(this._tenantId, eventType, value);
-    } catch (err: any) {
-      log.warn(
-        { tenantId: this._tenantId, eventType, error: err.message },
-        "Failed to record metric (non-fatal)",
-      );
-    }
+  public setTenantRegistry(registry: ITenantTokenLimitReader): void {
+    this.tenantLimits = registry;
   }
-
-  /**
-   * Sets the tenant registry for token limit enforcement.
-   * When set, the cortex will check the tenant's token_limit before processing LLM requests.
-   *
-   * @param registry - TenantRegistryService instance
-   */
-  public setTenantRegistry(registry: TenantRegistryService): void {
-    this._tenantRegistry = registry;
-    log.debug("Tenant registry configured for cortex");
-  }
-
-  /**
-   * Checks if the tenant has exceeded their token limit for the current month.
-   * - If no metrics collector or tenant registry is set, allows the request (no enforcement).
-   * - If token_limit is 0, allows the request (unlimited).
-   * - If current consumption >= token_limit, throws an error rejecting the request.
-   */
-  private checkTokenLimit(): void {
-    if (!this._metricsCollector || !this._tenantId || !this._tenantRegistry) {
-      return; // No enforcement possible without all components
-    }
-
-    try {
-      const tenantRecord = this._tenantRegistry.getById(this._tenantId);
-      if (!tenantRecord) {
-        return; // Tenant not in registry — allow request
-      }
-
-      const tokenLimit = tenantRecord.token_limit;
-
-      // token_limit of 0 means unlimited (no restriction)
-      if (tokenLimit === 0) {
-        return;
-      }
-
-      const currentTokens = this._metricsCollector.getCurrentMonthTokens(
-        this._tenantId,
-      );
-
-      if (currentTokens >= tokenLimit) {
-        log.warn(
-          { tenantId: this._tenantId, currentTokens, tokenLimit },
-          "Token limit reached — rejecting LLM request",
-        );
-        throw new Error(
-          `Token limit reached for tenant '${this._tenantId}'. ` +
-            `Current consumption: ${currentTokens} tokens, limit: ${tokenLimit} tokens per month. ` +
-            `Contact your platform administrator to increase the limit.`,
-        );
-      }
-    } catch (err: any) {
-      // Re-throw token limit errors
-      if (err.message?.includes("Token limit reached")) {
-        throw err;
-      }
-      // Log and allow request if there's an unexpected error checking the limit
-      log.warn(
-        { tenantId: this._tenantId, error: err.message },
-        "Failed to check token limit (non-fatal, allowing request)",
-      );
-    }
-  }
-
-  // ───────────────────────────────────────────────────────────────────────────
 
   public async chat(userMessage: string): Promise<void> {
-    this._sessionActive = true;
+    this.sessionActive = true;
     try {
-      await this._chatInternal(userMessage);
+      await this.checkTokenLimit();
+      const final = await this.runConversation(userMessage, false);
+      void final;
+      this.recordMetric("task_completed", 1);
+      await this.saveReflex();
+    } catch (error: unknown) {
+      this.recordMetric("task_error", 1);
+      throw error;
     } finally {
-      this._sessionActive = false;
+      this.sessionActive = false;
       this.flushPendingConfig();
     }
   }
 
-  private async _chatInternal(userMessage: string): Promise<void> {
-    // ── Token Limit Enforcement ─────────────────────────────────────────────
-    // Check if tenant has exceeded their monthly token limit BEFORE any LLM call
-    this.checkTokenLimit();
+  public override async *chatStream(
+    userMessage: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<string> {
+    this.sessionActive = true;
+    try {
+      await this.checkTokenLimit();
+      yield* super.chatStream(userMessage, signal);
+    } catch (error: unknown) {
+      this.recordMetric("task_error", 1);
+      throw error;
+    } finally {
+      this.sessionActive = false;
+      this.flushPendingConfig();
+    }
+  }
 
-    const preferred =
-      this._providerConfig.primaryProvider || (await chooseModel(userMessage));
-    const cleanText = userMessage.replace(/^\/(claude|gemini)\s*/i, "");
+  protected override async *streamFromLLM(
+    userMessage: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<string> {
+    const result = await this.runConversation(userMessage, true, signal, true);
+    if (result) yield result;
+    this.recordMetric("task_completed", 1);
+    await this.saveReflex();
+  }
 
-    log.info({ model: preferred.toUpperCase() }, "Seleccionando cerebro");
-
-    // ── Memoria Refleja: registrar input y consultar secuencia conocida ──────
-    this.trackInput(cleanText);
-    const match = await this.queryReflex(cleanText);
-
-    if (match) {
-      log.info(
-        {
-          mode: match.mode,
-          similarity: match.record.similarity?.toFixed(3),
-          sequence: match.record.sequence,
-        },
-        "Reflex encontrado",
-      );
-
-      if (match.mode === "reflex") {
-        // ── MODO REFLEX: ejecución directa sin LLM ──────────────────────────
-        // Aplica cuando similitud ≥ 0.95 y éxitos ≥ 3.
-        // Los args de herramientas se extraen del input con un parser simple.
-        // Si falla, se degrada a hint + loop LLM automáticamente.
-        try {
-          const results = await this.executeReflex(match);
-          log.info(
-            { results: results.length },
-            "Tarea completada vía reflex (0 tokens)",
-          );
-          return; // salir sin invocar el LLM
-        } catch {
-          // executeReflex ya marcó el fallo — continuar con loop LLM como fallback
-          log.info("Reflex falló, ejecutando con LLM como fallback");
-          this.history.create(this.sessionId, {
-            role: "system",
-            content: `[Memoria Refleja] Intenté la secuencia ${match.record.sequence} pero falló. Resuelve la tarea manualmente.`,
-            timestamp: Date.now(),
-          });
-        }
-      } else if (match.mode === "hint") {
-        // ── MODO HINT: inyectar guía al LLM ─────────────────────────────────
-        this.history.create(this.sessionId, {
+  private async runConversation(
+    userMessage: string,
+    streaming: boolean,
+    signal?: AbortSignal,
+    reflexPrepared = false,
+  ): Promise<string> {
+    const cleanText = userMessage.replace(/^\/(claude|gemini|nvidia)\s*/i, "");
+    if (!reflexPrepared) {
+      this.trackInput(cleanText);
+      const match = await this.queryReflex(cleanText);
+      if (match?.mode === "reflex") {
+        const results = await this.executeReflex(match);
+        const content = results.at(-1) ?? "✅ Tarea completada.";
+        this.addHistoryMessage(this.getSessionId(), {
+          role: "assistant",
+          content,
+          timestamp: Date.now(),
+        });
+        return streaming ? content : "";
+      }
+      if (match?.mode === "hint") {
+        this.addHistoryMessage(this.getSessionId(), {
           role: "system",
-          content: `[Memoria Refleja] Para tareas similares, la secuencia exitosa anterior fue: ${match.record.sequence}. Úsala como guía si aplica.`,
+          content: `[Memoria Refleja] Secuencia exitosa anterior: ${match.record.sequence}. Úsala como guía si aplica.`,
           timestamp: Date.now(),
         });
       }
     }
-    // ─────────────────────────────────────────────────────────────────────────
 
-    // ── Jev Pre-Router: clasificar célula antes del loop LLM ─────────────────
-    // Solo aplica cuando el reflex fue miss — si fue hit ya salimos arriba.
-    // Obtiene los allowedCells del primer organismo (perfil del tenant) y el
-    // historial reciente para resolver pronombres ("guardala", "envíala", etc.)
-    // Si Jev confía ≥ 0.70, pre-muta la célula antes de que el LLM arranque.
-    // Si Jev falla o tiene baja confianza, el flujo continúa sin cambios.
-    const firstOrg = this.organisms[0];
-    const allowedCells = firstOrg?.getAllowedCells();
-    if (allowedCells && allowedCells.length > 0) {
-      const recentHistory: RouterHistoryEntry[] = this.history
-        .toMessages(this.sessionId)
-        .slice(-4)
-        .filter((m) => m.role === "user" || m.role === "assistant")
-        .map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        }));
-
-      const route = await preCellRoute(cleanText, recentHistory, allowedCells);
-
-      if (route) {
-        log.info(
-          {
-            cellType: route.cellType,
-            confidence: route.confidence.toFixed(3),
-            complexity: route.complexityScore.toFixed(2),
-            refersToContext: route.refersToContext,
-            inputTokens: route.inputTokens,
-          },
-          "Jev pre-routing: mutando célula antes del LLM",
-        );
-        // Pre-mutar la célula — el LLM arrancará con las herramientas ya disponibles
-        // y no necesitará gastar un turno en llamar stimulate_differentiation
-        if (!this._mutatedTypes.has(route.cellType)) {
-          await this.routeStimulus({
-            type: route.cellType,
-            source: "jev-pre-router",
-            metadata: {
-              confidence: route.confidence,
-              complexityScore: route.complexityScore,
-            },
-          });
-          this._mutatedTypes.add(route.cellType);
-        }
-      }
-    }
-    // ─────────────────────────────────────────────────────────────────────────
-
-    // Registrar mensaje del usuario UNA sola vez (antes de intentar proveedores)
-    this.history.create(this.sessionId, {
+    let effectsStarted = await this.preRoute(cleanText);
+    this.addHistoryMessage(this.getSessionId(), {
       role: "user",
       content: cleanText,
       timestamp: Date.now(),
     });
 
-    // Cadena de fallback: primary → secondary → nvidia (tercer nivel)
-    const providers = this.buildProviderChain(preferred, cleanText);
-
-    let lastError: any = null;
-    for (const provider of providers) {
+    await this.refreshTools();
+    const chain = this.providerChain();
+    const attempts: Array<{
+      provider: LLMProviderName;
+      category: ProviderError["category"];
+      status?: number;
+      message: string;
+    }> = [];
+    for (let index = 0; index < chain.length; index += 1) {
+      const provider = chain[index];
       try {
-        await provider.breaker.execute(provider.run);
-        await this.saveReflex();
-        return; // éxito — salir del loop
-      } catch (error: any) {
-        lastError = error;
-        log.warn(
-          { model: provider.name, error: error.message },
-          `${provider.name} falló, intentando siguiente fallback`,
+        const streamResult = streaming
+          ? await this.transportStream(provider, this.buildRequest(signal))
+          : undefined;
+        const response = streaming
+          ? streamResult!.response
+          : await this.transportComplete(provider, this.buildRequest(signal));
+        this.recordUsage(response);
+
+        if (response.toolCalls.length === 0) {
+          this.addAssistant(response);
+          return streaming
+            ? streamResult!.deltas.join("") || response.text
+            : response.text;
+        }
+
+        this.addAssistant(response);
+        await this.executeToolCalls(response.toolCalls, () => {
+          effectsStarted = true;
+        });
+        await this.refreshTools();
+        if (index !== 0 || effectsStarted) {
+          // The active provider is fixed after the first tool response.
+        }
+        for (let iteration = 1; iteration < MAX_ITERATIONS; iteration += 1) {
+          await this.refreshTools();
+          const nextStream = streaming
+            ? await this.transportStream(provider, this.buildRequest(signal))
+            : undefined;
+          const next = streaming
+            ? nextStream!.response
+            : await this.transportComplete(provider, this.buildRequest(signal));
+          this.recordUsage(next);
+          if (next.toolCalls.length === 0) {
+            this.addAssistant(next);
+            return streaming
+              ? nextStream!.deltas.join("") || next.text
+              : next.text;
+          }
+          this.addAssistant(next);
+          await this.executeToolCalls(next.toolCalls, () => {
+            effectsStarted = true;
+          });
+          await this.refreshTools();
+        }
+        throw new ProviderError(
+          provider.name,
+          "internal",
+          "Se alcanzó el límite de 10 vueltas",
+          {
+            retryable: false,
+            safeContext: { reason: "iteration_limit" },
+          },
         );
-        // Record cortex_error for each provider failure
-        this.recordMetric("cortex_error", 1);
+      } catch (error: unknown) {
+        const normalized = this.asProviderError(provider.name, error);
+        if (
+          !(error instanceof ToolExecutionError) &&
+          !(error instanceof GuardrailBlockedError) &&
+          !(error instanceof MutationError)
+        ) {
+          this.recordMetric("cortex_error", 1);
+        }
+        attempts.push({
+          provider: provider.name,
+          category: normalized.category,
+          ...(normalized.status !== undefined
+            ? { status: normalized.status }
+            : {}),
+          message: normalized.message,
+        });
+        if (
+          effectsStarted ||
+          !normalized.retryable ||
+          index === chain.length - 1
+        ) {
+          if (
+            !effectsStarted &&
+            index === chain.length - 1 &&
+            attempts.length > 1
+          ) {
+            throw new ProviderError(
+              "all",
+              normalized.category,
+              "Todos los providers fallaron",
+              {
+                status: normalized.status,
+                retryable: false,
+                attempts,
+              },
+            );
+          }
+          if (attempts.length > 1 && normalized.retryable && effectsStarted) {
+            throw new ProviderError(
+              "all",
+              normalized.category,
+              normalized.message,
+              {
+                status: normalized.status,
+                retryable: false,
+                attempts,
+              },
+            );
+          }
+          throw normalized;
+        }
       }
     }
 
-    // Todos los proveedores fallaron
-    const names = providers.map((p) => p.name).join(", ");
-    log.error({ providers: names }, "Todos los modelos fallaron");
-    throw new ProviderError(
-      "all",
-      `Todos los modelos fallaron (${names}). Último error: ${lastError?.message}`,
+    throw new ProviderError("all", "internal", "Todos los providers fallaron", {
+      retryable: false,
+      attempts,
+    });
+  }
+
+  private buildRequest(signal?: AbortSignal): LLMRequest {
+    const tools = normalizeTools(this.getUnifiedToolsSync());
+    return {
+      messages: this.getStructuredHistory(),
+      tools,
+      ...(signal ? { signal } : {}),
+    };
+  }
+
+  private getUnifiedToolsSync(): readonly import("../providers/providerTypes.js").LLMTool[] {
+    // getUnifiedTools is async because MCP inspection may cross a process boundary.
+    // The current snapshot is populated synchronously by the coordinator before each request.
+    return this.toolSnapshot;
+  }
+
+  private toolSnapshot: readonly import("../providers/providerTypes.js").LLMTool[] =
+    [];
+
+  private async refreshTools(): Promise<void> {
+    this.toolSnapshot =
+      (await this.getUnifiedTools()) as unknown as readonly import("../providers/providerTypes.js").LLMTool[];
+  }
+
+  private async preRoute(input: string): Promise<boolean> {
+    const firstOrg = this.organisms[0];
+    const allowedCells = firstOrg?.getAllowedCells();
+    if (!allowedCells?.length) return false;
+    const recentHistory: RouterHistoryEntry[] = this.getHistory()
+      .slice(-4)
+      .filter((entry) => entry.role === "user" || entry.role === "assistant")
+      .map((entry) => ({
+        role: entry.role as "user" | "assistant",
+        content: entry.content,
+      }));
+    const route = await preCellRoute(input, recentHistory, allowedCells);
+    if (!route || this._mutatedTypes.has(route.cellType)) return false;
+    await this.routeStimulus({
+      type: route.cellType,
+      source: "jev-pre-router",
+      metadata: {
+        confidence: route.confidence,
+        complexityScore: route.complexityScore,
+      },
+    });
+    this._mutatedTypes.add(route.cellType);
+    return true;
+  }
+
+  private async executeToolCalls(
+    calls: readonly LLMToolCall[],
+    onSuccess: () => void,
+  ): Promise<void> {
+    for (let index = 0; index < calls.length; index += 1) {
+      const call = calls[index];
+      try {
+        const result = await this.executeAction(call.name, call.arguments);
+        onSuccess();
+        this.historyManager.addStructuredMessage(this.getSessionId(), {
+          role: "tool",
+          toolCallId: call.id,
+          name: call.name,
+          content: result,
+          isError: false,
+        });
+      } catch (error: unknown) {
+        const message =
+          error instanceof ProviderError ||
+          error instanceof ToolExecutionError ||
+          error instanceof GuardrailBlockedError ||
+          error instanceof MutationError
+            ? error.code
+            : "TOOL_EXECUTION_ERROR";
+        for (const pending of calls.slice(index)) {
+          this.historyManager.addStructuredMessage(this.getSessionId(), {
+            role: "tool",
+            toolCallId: pending.id,
+            name: pending.name,
+            content: `[${message}]`,
+            isError: true,
+          });
+        }
+        throw error;
+      }
+    }
+  }
+
+  private addAssistant(response: LLMResponse): void {
+    this.historyManager.addStructuredMessage(this.getSessionId(), {
+      role: "assistant",
+      content: response.text || null,
+      toolCalls: response.toolCalls,
+    });
+  }
+
+  private providerChain(): ILLMProvider[] {
+    const names = [
+      this.providerConfig.primaryProvider,
+      ...this.providerConfig.fallbackOrder,
+    ];
+    const unique = [...new Set(names)];
+    return unique
+      .map((name) => this.providers.get(name))
+      .filter((provider): provider is ILLMProvider => provider !== undefined);
+  }
+
+  private async transportComplete(
+    provider: ILLMProvider,
+    request: LLMRequest,
+  ): Promise<LLMResponse> {
+    const breaker = this.breakers.get(provider.name);
+    if (!breaker)
+      throw new ProviderError(
+        provider.name,
+        "internal",
+        "Breaker no configurado",
+        { retryable: false },
+      );
+    try {
+      const normalized = normalizeLLMRequest(request);
+      return await breaker.execute(() => provider.complete(normalized));
+    } catch (error: unknown) {
+      throw this.asProviderError(provider.name, error);
+    }
+  }
+
+  private async transportStream(
+    provider: ILLMProvider,
+    request: LLMRequest,
+  ): Promise<StreamResult> {
+    const breaker = this.breakers.get(provider.name);
+    if (!breaker)
+      throw new ProviderError(
+        provider.name,
+        "internal",
+        "Breaker no configurado",
+        { retryable: false },
+      );
+    try {
+      const normalized = normalizeLLMRequest(request);
+      return await breaker.execute(async () => {
+        const deltas: string[] = [];
+        let completed: LLMResponse | undefined;
+        for await (const event of provider.stream(normalized)) {
+          if (event.type === "text_delta") deltas.push(event.text);
+          else if (completed)
+            throw new ProviderError(
+              provider.name,
+              "malformed_response",
+              "Stream con completed duplicado",
+              { retryable: true },
+            );
+          else completed = event.response;
+        }
+        if (!completed)
+          throw new ProviderError(
+            provider.name,
+            "malformed_response",
+            "Stream sin completed",
+            { retryable: true },
+          );
+        return { deltas, response: completed };
+      });
+    } catch (error: unknown) {
+      throw this.asProviderError(provider.name, error);
+    }
+  }
+
+  private asProviderError(
+    provider: LLMProviderName,
+    error: unknown,
+  ): ProviderError {
+    if (error instanceof ProviderError) return error;
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof CircuitOpenError) {
+      return new ProviderError(provider, "circuit_open", error.message, {
+        retryable: true,
+      });
+    }
+    if (error instanceof ValidationError) {
+      return new ProviderError(provider, "internal", error.message, {
+        retryable: false,
+      });
+    }
+    if (
+      error instanceof ToolExecutionError ||
+      error instanceof GuardrailBlockedError ||
+      error instanceof MutationError
+    ) {
+      throw error;
+    }
+    return new ProviderError(
+      provider,
+      "internal",
+      error instanceof Error ? error.message : "Error interno del provider",
+      { retryable: false },
     );
   }
 
-  private buildProviderChain(preferred: string, text: string) {
-    const claude = {
-      breaker: this.claudeBreaker,
-      run: () => this.runClaudeLoop(text),
-      name: "claude" as LLMProviderName,
-    };
-    const gemini = {
-      breaker: this.geminiBreaker,
-      run: () => this.runGeminiLoop(text),
-      name: "gemini" as LLMProviderName,
-    };
-    const nvidia = {
-      breaker: this.nvidiaBreaker,
-      run: () => this.runNvidiaLoop(text),
-      name: "nvidia" as LLMProviderName,
-    };
-
-    const providerMap: Record<LLMProviderName, typeof claude> = {
-      claude,
-      gemini,
-      nvidia,
-    };
-
-    // Use the configured fallback order from _providerConfig
-    const primary =
-      providerMap[preferred as LLMProviderName] ??
-      providerMap[this._providerConfig.primaryProvider];
-    const fallbacks = this._providerConfig.fallbackOrder
-      .filter((name) => name !== preferred)
-      .map((name) => providerMap[name]);
-
-    return [primary, ...fallbacks];
+  private recordUsage(response: LLMResponse): void {
+    this.recordMetric("tokens", response.usage.totalTokens);
   }
 
-  private async runClaudeLoop(text: string) {
-    let processing = true;
-    while (processing) {
-      const response = await this.anthropic.messages.create({
-        model: "claude-3-5-sonnet-latest",
-        max_tokens: 1024,
-        messages: this.history.toMessages(this.sessionId).map((m) => ({
-          role: m.role === "user" ? "user" : "assistant",
-          content: m.content,
-        })),
-        tools: await this.getAnthropicTools(),
+  private recordMetric(
+    event: "tokens" | "task_completed" | "task_error" | "cortex_error",
+    value: number,
+  ): void {
+    if (!this.metrics || !this.tenantId) return;
+    try {
+      this.metrics.record(this.tenantId, event, value);
+    } catch (error: unknown) {
+      log.warn("No se pudo registrar métrica", {
+        event,
+        error: error instanceof Error ? error.message : "unknown",
       });
-
-      // Record token usage from Claude response
-      if (response.usage) {
-        const totalTokens =
-          (response.usage.input_tokens || 0) +
-          (response.usage.output_tokens || 0);
-        if (totalTokens > 0) {
-          this.recordMetric("tokens", totalTokens);
-        }
-      }
-
-      const textBlock = response.content.find(
-        (c) => c.type === "text",
-      ) as Anthropic.TextBlock;
-      if (textBlock) {
-        this.history.create(this.sessionId, {
-          role: "assistant",
-          content: textBlock.text,
-          timestamp: Date.now(),
-        });
-      }
-      const toolCalls = response.content.filter((c) => c.type === "tool_use");
-      if (toolCalls.length > 0) {
-        const results: any[] = [];
-        for (const call of toolCalls) {
-          const out = await this.executeAction(call.name, call.input);
-          results.push({
-            type: "tool_result",
-            tool_use_id: call.id,
-            content: out,
-          });
-        }
-        this.history.create(this.sessionId, {
-          role: "user",
-          content: JSON.stringify(results),
-          timestamp: Date.now(),
-        });
-      } else {
-        if (textBlock)
-          log.info(
-            { response: textBlock.text.substring(0, 200) },
-            "Respuesta de Claude",
-          );
-        processing = false;
-      }
     }
   }
 
-  private async createGeminiChat() {
-    const modelName = this.getModelName();
-    const tools = await this.getGeminiTools();
-    const model = this.genAI.getGenerativeModel({
-      model: modelName,
-      tools: tools as any,
-      safetySettings: [
+  private async checkTokenLimit(): Promise<void> {
+    if (!this.metrics || !this.tenantLimits || !this.tenantId) return;
+    const tenant = this.tenantLimits.getById(this.tenantId);
+    if (!tenant || tenant.token_limit === 0) return;
+    const current = this.metrics.getCurrentMonthTokens(this.tenantId);
+    if (current >= tenant.token_limit) {
+      throw new ValidationError(
+        `Límite de tokens alcanzado para '${this.tenantId}'`,
         {
-          category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-          threshold: HarmBlockThreshold.BLOCK_NONE,
-        },
-      ],
-    });
-
-    return model.startChat({
-      history: this.history
-        .toMessages(this.sessionId)
-        .filter((m) => m.role !== "system")
-        .map((m) => ({
-          role: m.role === "user" ? "user" : "model",
-          parts: [{ text: m.content }],
-        })),
-    });
-  }
-
-  private async runGeminiLoop(text: string) {
-    let chat = await this.createGeminiChat();
-    let result = await chat.sendMessage(text);
-
-    // Record token usage from Gemini response
-    const initialUsage = result.response.usageMetadata;
-    if (initialUsage) {
-      const totalTokens =
-        (initialUsage.promptTokenCount || 0) +
-        (initialUsage.candidatesTokenCount || 0);
-      if (totalTokens > 0) {
-        this.recordMetric("tokens", totalTokens);
-      }
-    }
-
-    let calls = result.response.functionCalls();
-    let iterations = 0;
-    const MAX_ITERATIONS = 10;
-
-    while (calls && calls.length > 0 && iterations < MAX_ITERATIONS) {
-      iterations++;
-      let mutated = false;
-      const results: any[] = [];
-
-      for (const call of calls) {
-        const out = await this.executeAction(call.name, call.args);
-        results.push({
-          functionResponse: { name: call.name, response: { content: out } },
-        });
-        if (call.name === "stimulate_differentiation") mutated = true;
-      }
-
-      if (mutated) {
-        log.info("Mutación detectada, refrescando herramientas");
-        const summary = results
-          .map(
-            (r) =>
-              `${r.functionResponse.name}: ${r.functionResponse.response.content}`,
-          )
-          .join("\n");
-        this.history.create(this.sessionId, {
-          role: "assistant",
-          content: summary,
-          timestamp: Date.now(),
-        });
-
-        chat = await this.createGeminiChat();
-        const toolNames = (await this.getUnifiedTools()).map((t) => t.name);
-        const continueMsg = `Sistema mutado. Herramientas: ${toolNames.join(", ")}. Continúa la tarea original.`;
-        this.history.create(this.sessionId, {
-          role: "user",
-          content: continueMsg,
-          timestamp: Date.now(),
-        });
-        result = await chat.sendMessage(continueMsg);
-
-        // Record token usage from Gemini post-mutation response
-        const mutationUsage = result.response.usageMetadata;
-        if (mutationUsage) {
-          const mutTokens =
-            (mutationUsage.promptTokenCount || 0) +
-            (mutationUsage.candidatesTokenCount || 0);
-          if (mutTokens > 0) {
-            this.recordMetric("tokens", mutTokens);
-          }
-        }
-      } else {
-        result = await chat.sendMessage(results);
-      }
-
-      // Record token usage from Gemini follow-up responses
-      const loopUsage = result.response.usageMetadata;
-      if (loopUsage) {
-        const loopTokens =
-          (loopUsage.promptTokenCount || 0) +
-          (loopUsage.candidatesTokenCount || 0);
-        if (loopTokens > 0) {
-          this.recordMetric("tokens", loopTokens);
-        }
-      }
-
-      calls = result.response.functionCalls();
-    }
-
-    const final = result.response.text();
-    if (final) {
-      log.info({ response: final.substring(0, 200) }, "Respuesta de Gemini");
-      this.history.create(this.sessionId, {
-        role: "assistant",
-        content: final,
-        timestamp: Date.now(),
-      });
-    }
-  }
-
-  private async runNvidiaLoop(text: string) {
-    let processing = true;
-    let iterations = 0;
-    const MAX_ITERATIONS = 10;
-
-    while (processing && iterations < MAX_ITERATIONS) {
-      iterations++;
-
-      const messages = this.history.toMessages(this.sessionId).map((m) => {
-        let role: "system" | "user" | "assistant" = "assistant";
-        if (m.role === "user") role = "user";
-        else if (m.role === "system") role = "system";
-        return { role, content: m.content };
-      });
-
-      const tools = await this.getNvidiaTools();
-
-      const payload: Record<string, unknown> = {
-        model: this.nvidiaModel,
-        messages,
-        max_tokens: 1024,
-        temperature: 0.2,
-        top_p: 0.7,
-        stream: false,
-      };
-
-      if (tools.length > 0) {
-        payload.tools = tools;
-        payload.tool_choice = "auto";
-      }
-
-      const response: AxiosResponse = await axios.post(
-        `${this.nvidiaBaseUrl}/chat/completions`,
-        payload,
-        {
-          headers: {
-            Authorization: `Bearer ${this.nvidiaApiKey}`,
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          timeout: 60_000,
+          tenantId: this.tenantId,
         },
       );
+    }
+  }
 
-      const choice = response.data.choices?.[0];
-      if (!choice) break;
-
-      // Record token usage from NVIDIA response
-      const nvidiaUsage = response.data.usage;
-      if (nvidiaUsage) {
-        const totalTokens =
-          (nvidiaUsage.prompt_tokens || 0) +
-          (nvidiaUsage.completion_tokens || 0);
-        if (totalTokens > 0) {
-          this.recordMetric("tokens", totalTokens);
-        }
-      }
-
-      const assistantMessage = choice.message;
-
-      if (assistantMessage.content) {
-        this.history.create(this.sessionId, {
-          role: "assistant",
-          content: assistantMessage.content,
-          timestamp: Date.now(),
-        });
-        log.info(
-          { response: assistantMessage.content.substring(0, 200) },
-          "Respuesta de NVIDIA",
+  private normalizeConfig(config: LLMProviderConfig): LLMProviderConfig {
+    if (!LLMProviderNameSchema.safeParse(config.primaryProvider).success) {
+      throw new ValidationError(
+        `Proveedor LLM desconocido: ${String(config.primaryProvider)}`,
+      );
+    }
+    const fallback = [...config.fallbackOrder];
+    for (const provider of fallback) {
+      if (!LLMProviderNameSchema.safeParse(provider).success) {
+        throw new ValidationError(
+          `Proveedor fallback desconocido: ${String(provider)}`,
         );
       }
-
-      const toolCalls = assistantMessage.tool_calls;
-      if (toolCalls && toolCalls.length > 0) {
-        for (const toolCall of toolCalls) {
-          const toolName = toolCall.function.name;
-          let toolArgs: Record<string, unknown> = {};
-          try {
-            toolArgs = JSON.parse(toolCall.function.arguments);
-          } catch {
-            log.warn(
-              { raw: toolCall.function.arguments },
-              "Args inválidos de NVIDIA",
-            );
-          }
-
-          log.info(
-            { tool: toolName, iteration: iterations },
-            "Ejecutando herramienta (NVIDIA)",
-          );
-          const output = await this.executeAction(toolName, toolArgs);
-
-          this.history.create(this.sessionId, {
-            role: "user",
-            content: JSON.stringify({
-              type: "tool_result",
-              tool_call_id: toolCall.id,
-              name: toolName,
-              content: output,
-            }),
-            timestamp: Date.now(),
-          });
-        }
-      } else {
-        processing = false;
-      }
     }
+    if (!this.singleProvider && fallback.length === 0) {
+      throw new ValidationError(
+        "La configuración unificada requiere fallbackOrder",
+      );
+    }
+    return {
+      primaryProvider: config.primaryProvider,
+      fallbackOrder: [
+        ...new Set(
+          fallback.filter((provider) => provider !== config.primaryProvider),
+        ),
+      ],
+    };
   }
 
-  /**
-   * Override chatStream to track session active state for reconfigure queuing.
-   * Also enforces token limit before streaming.
-   */
-  public override async *chatStream(
-    userMessage: string,
-  ): AsyncGenerator<string> {
-    // ── Token Limit Enforcement ─────────────────────────────────────────────
-    // Check if tenant has exceeded their monthly token limit BEFORE any LLM call
-    this.checkTokenLimit();
-
-    this._sessionActive = true;
-    try {
-      yield* super.chatStream(userMessage);
-    } finally {
-      this._sessionActive = false;
-      this.flushPendingConfig();
-    }
+  private flushPendingConfig(): void {
+    if (!this.pendingConfig) return;
+    this.providerConfig = this.pendingConfig;
+    this.pendingConfig = null;
   }
-}
-
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const master = new UnifiedCortex();
-  await master.init();
-  log.info("Cortex Unificado listo");
-  const readline = await import("node:readline");
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  const ask = () => {
-    rl.question("👤 [TÚ]: ", async (input) => {
-      if (input.toLowerCase() === "salir") return rl.close();
-      await master.chat(input);
-      ask();
-    });
-  };
-  ask();
 }

@@ -49,7 +49,11 @@ export class HealthServer {
   private readonly routeHandlers: Map<string, RouteHandler> = new Map();
   private readonly rateLimiter = new HttpRateLimiter();
   private streamHandler:
-    | ((tenantId: string, message: string) => AsyncGenerator<string>)
+    | ((
+        tenantId: string,
+        message: string,
+        signal?: AbortSignal,
+      ) => AsyncGenerator<string>)
     | null = null;
 
   registerCheck(name: string, fn: () => Promise<boolean>): void {
@@ -63,7 +67,11 @@ export class HealthServer {
 
   /** Registra el handler de streaming para chat */
   registerStreamHandler(
-    fn: (tenantId: string, message: string) => AsyncGenerator<string>,
+    fn: (
+      tenantId: string,
+      message: string,
+      signal?: AbortSignal,
+    ) => AsyncGenerator<string>,
   ): void {
     this.streamHandler = fn;
   }
@@ -259,13 +267,29 @@ export class HealthServer {
               "Access-Control-Allow-Origin": "*",
             });
 
-            const stream = this.streamHandler(tenantId, parsed.message);
-            for await (const chunk of stream) {
-              res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+            const controller = new AbortController();
+            const abort = () => controller.abort();
+            req.once("close", abort);
+            const stream = this.streamHandler(
+              tenantId,
+              parsed.message,
+              controller.signal,
+            );
+            try {
+              for await (const chunk of stream) {
+                res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+              }
+              if (!controller.signal.aborted) {
+                res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+              }
+              res.end();
+            } finally {
+              req.off("close", abort);
             }
-            res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
-            res.end();
           } catch (error: any) {
+            // A disconnected SSE client has already closed its writable side;
+            // abort is propagated to TenantManager/provider and nothing else is sent.
+            if (res.destroyed || res.writableEnded) return;
             if (res.headersSent) {
               res.write(
                 `data: ${JSON.stringify({ error: error.message })}\n\n`,

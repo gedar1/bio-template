@@ -28,7 +28,16 @@ export * from "./molecules/interfaces/IWhatsApp.js";
 export * from "./molecules/interfaces/IWebSocket.js";
 
 // ─── Cells ────────────────────────────────────────────────────
-export { CellServer } from "./cells/CellServer.js";
+export { CellServer, runCellServer } from "./cells/CellServer.js";
+export type {
+  CellComposition,
+  CellFactory,
+  CellRegistration,
+  CellResource,
+  CellRuntimeContext,
+  CellToolRegistrar,
+} from "./cells/CellComposition.js";
+export type { CellServerOptions } from "./cells/CellServer.js";
 export * from "./cells/interfaces/ICell.js";
 
 // ─── Organisms ────────────────────────────────────────────────
@@ -51,7 +60,14 @@ export type { ReflexFlow } from "./system/reflexSeed.js";
 export { seedReflexes, FLOWS as CORE_FLOWS } from "./system/reflexSeed.js";
 
 // ─── System Strategy Interfaces ───────────────────────────────
-export * from "./system/strategies/index.js";
+export * from "./system/interfaces/IUsageMetricsSink.js";
+export * from "./system/interfaces/ITenantTokenLimitReader.js";
+export { UnifiedCortex } from "./system/implementations/UnifiedCortex.js";
+export type { UnifiedCortexOptions } from "./system/implementations/UnifiedCortex.js";
+export { ClaudeCortex } from "./system/implementations/ClaudeCortex.js";
+export { GeminiCortex } from "./system/implementations/GeminiCortex.js";
+export { NvidiaCortex } from "./system/implementations/NvidiaCortex.js";
+export * from "./system/providers/index.js";
 
 // ─── Infrastructure ───────────────────────────────────────────
 export { CircuitBreaker } from "./infrastructure/CircuitBreaker.js";
@@ -68,7 +84,7 @@ export { registerAllRoutes } from "./server/RouteRegistry.js";
 export type { RouteDependencies } from "./server/RouteRegistry.js";
 
 // ─── Config utilities ─────────────────────────────────────────
-export { createLogger } from "./config/logger.js";
+export { createApplicationComposition } from "./config/applicationComposition.js";
 export type { ILogger } from "./config/ILogger.js";
 export { PinoLoggerAdapter } from "./config/ILogger.js";
 export * from "./config/telemetry.js";

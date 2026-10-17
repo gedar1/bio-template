@@ -38,7 +38,9 @@ export abstract class BaseOrganisms implements IOrganism {
    * Instancia un CellServer (Servidor MCP Node) como hijo independiente y lo muta a su especialidad.
    */
   public async initializeContext(): Promise<void> {
-    const serverPath = path.join(__dirname, "..", "cells", "CellServer.js");
+    const serverPath =
+      process.env.BIOCORE_CELL_SERVER_PATH ??
+      path.join(__dirname, "..", "cells", "CellServer.js");
 
     const transport = new StdioClientTransport({
       command: "node",

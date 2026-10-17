@@ -25,7 +25,7 @@ import * as dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 import { BaseOrganisms } from "../organisms/BaseOrganisms.js";
 import { createLogger } from "../config/logger.js";
-import { TenantManager } from "./TenantManager.js";
+import { TenantManager, type TenantManagerDeps } from "./TenantManager.js";
 
 dotenv.config();
 
@@ -48,12 +48,13 @@ export class MCPExternalServer {
   private readonly server: McpServer;
   private readonly tenantManager: TenantManager;
 
-  constructor() {
+  constructor(deps: TenantManagerDeps = {}) {
     this.server = new McpServer({
       name: "biocore",
       version: "1.0.0",
     });
-    this.tenantManager = new TenantManager();
+    // MCP standalone has no platform registry or metrics unless explicitly injected.
+    this.tenantManager = new TenantManager(deps);
     this.registerTools();
   }
 

@@ -1,10 +1,13 @@
 import { BaseOrganisms } from "../organisms/BaseOrganisms.js";
-import { HistoryMolecule } from "../molecules/HistoryMolecule.js";
 import { PerfMonitor } from "../infrastructure/PerfMonitor.js";
 import { StimulusTypeSchema } from "../config/validators.js";
 import { createLogger } from "../config/logger.js";
 import { measureSpan } from "../config/telemetry.js";
-import { ToolExecutionError, GuardrailBlockedError } from "../errors.js";
+import {
+  ToolExecutionError,
+  GuardrailBlockedError,
+  MutationError,
+} from "../errors.js";
 import {
   deduplicateTools,
   preloadPipeline,
@@ -65,18 +68,12 @@ export interface OrchestratorOptions {
 export abstract class BaseOrchestrator implements IOrchestrator {
   protected organisms: BaseOrganisms[] = [];
 
-  /**
-   * Molécula de historial subyacente. Se expone como miembro protegido para
-   * preservar la compatibilidad con las subclases (los Cortex concretos usan
-   * `this.history.create(...)` / `this.history.toMessages(...)` directamente).
-   */
-  protected readonly history: HistoryMolecule;
-
   protected sessionId: string;
   protected readonly log: ILogger;
 
+  protected readonly historyManager: IHistoryManager;
+
   private readonly reflexExecutor: IReflexExecutor;
-  private readonly historyManager: IHistoryManager;
   private readonly perfTracker: IPerfTracker;
 
   /** Tipos de célula ya mutados en la sesión actual (previene duplicados). */
@@ -101,18 +98,9 @@ export abstract class BaseOrchestrator implements IOrchestrator {
       this.perfTracker = new DefaultPerfTracker(new PerfMonitor(), this.log);
     }
 
-    // ── HistoryManager (comparte la molécula con this.history) ────────────────
-    if (options.historyManager) {
-      this.historyManager = options.historyManager;
-      const molecule = (
-        options.historyManager as { molecule?: HistoryMolecule }
-      ).molecule;
-      this.history = molecule ?? new HistoryMolecule();
-    } else {
-      const molecule = new HistoryMolecule();
-      this.history = molecule;
-      this.historyManager = new DefaultHistoryManager(molecule, this.log);
-    }
+    // ── HistoryManager (the structured transcript is its single source) ───────
+    this.historyManager =
+      options.historyManager ?? new DefaultHistoryManager(undefined, this.log);
 
     // ── ReflexExecutor (comparte el PerfMonitor vía perfTracker) ──────────────
     this.reflexExecutor =
@@ -147,9 +135,21 @@ export abstract class BaseOrchestrator implements IOrchestrator {
    * Llamar en el constructor del Cortex concreto tras inicializar el cliente LLM.
    */
   public setSummarizer(
-    fn: (messages: HistoryEntry[]) => Promise<string>,
+    fn: (
+      messages: readonly import("./providers/providerTypes.js").LLMMessage[],
+    ) => Promise<string>,
   ): void {
     this.historyManager.setSummarizer(fn);
+  }
+
+  /** Adds a public history entry through the structured history owner. */
+  public addHistoryMessage(sessionId: string, entry: HistoryEntry): void {
+    this.historyManager.addMessage(sessionId, entry);
+  }
+
+  /** Returns the protocol transcript used to build provider requests. */
+  protected getStructuredHistory(): readonly import("./providers/providerTypes.js").LLMMessage[] {
+    return this.historyManager.structured.snapshot(this.sessionId);
   }
 
   // ─── Orquestación ────────────────────────────────────────────────────────────
@@ -312,12 +312,21 @@ export abstract class BaseOrchestrator implements IOrchestrator {
               .join("\n");
           }
           return JSON.stringify(result);
-        } catch (error: any) {
+        } catch (error: unknown) {
+          if (
+            error instanceof GuardrailBlockedError ||
+            error instanceof ToolExecutionError ||
+            error instanceof MutationError
+          ) {
+            throw error;
+          }
+          const message =
+            error instanceof Error ? error.message : "Unknown tool failure";
           this.log.error("Error ejecutando herramienta", {
             tool: name,
-            error: error.message,
+            error: message,
           });
-          throw new ToolExecutionError(name, error.message);
+          throw new ToolExecutionError(name, message);
         }
       }
     }
@@ -394,7 +403,10 @@ export abstract class BaseOrchestrator implements IOrchestrator {
    * 2. Si hint → inyecta contexto antes de llamar al LLM.
    * 3. Delega el streaming real a streamFromLLM() (implementado por subclases).
    */
-  public async *chatStream(userMessage: string): AsyncGenerator<string> {
+  public async *chatStream(
+    userMessage: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<string> {
     this.trackInput(userMessage);
     const match = await this.queryReflex(userMessage);
 
@@ -411,7 +423,7 @@ export abstract class BaseOrchestrator implements IOrchestrator {
             steps: results.length,
           });
           const formatted = formatReflexResults(results, match.record.steps);
-          this.history.create(this.sessionId, {
+          this.addHistoryMessage(this.sessionId, {
             role: "assistant",
             content: formatted,
             timestamp: Date.now(),
@@ -427,7 +439,7 @@ export abstract class BaseOrchestrator implements IOrchestrator {
               err.failedStep,
               err.message,
             );
-            this.history.create(this.sessionId, {
+            this.addHistoryMessage(this.sessionId, {
               role: "assistant",
               content: formatted,
               timestamp: Date.now(),
@@ -438,7 +450,7 @@ export abstract class BaseOrchestrator implements IOrchestrator {
           this.log.info("Reflex fallo, usando LLM como fallback");
         }
       } else if (match.mode === "hint") {
-        this.history.create(this.sessionId, {
+        this.addHistoryMessage(this.sessionId, {
           role: "system",
           content: `[Memoria Refleja] Secuencia exitosa anterior: ${match.record.sequence}. Usala como guia.`,
           timestamp: Date.now(),
@@ -447,16 +459,19 @@ export abstract class BaseOrchestrator implements IOrchestrator {
       }
     }
 
-    yield* this.streamFromLLM(userMessage);
+    yield* this.streamFromLLM(userMessage, signal);
   }
 
   /**
    * Implementación del streaming LLM. Cada subclase (GeminiCortex, etc.) la sobreescribe.
    * No debe contener lógica reflex — eso ya lo maneja chatStream().
    */
-  protected async *streamFromLLM(userMessage: string): AsyncGenerator<string> {
+  protected async *streamFromLLM(
+    userMessage: string,
+    _signal?: AbortSignal,
+  ): AsyncGenerator<string> {
     await this.chat(userMessage);
-    const messages = this.history.toMessages(this.sessionId);
+    const messages = this.getHistory();
     const last = messages.at(-1);
     if (last?.role === "assistant") {
       yield last.content;

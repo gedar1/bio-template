@@ -23,7 +23,9 @@
  */
 
 import Database from "better-sqlite3";
+import { z } from "zod";
 import { createLogger } from "../config/logger.js";
+import { MoleculeError } from "../errors.js";
 import type { IMolecule } from "./interfaces/IMolecule.js";
 
 const log = createLogger("ExampleMolecule");
@@ -43,10 +45,32 @@ export interface DomainRecord {
   updatedAt: number;
 }
 
+type DomainRecordRow = {
+  id: number;
+  tenant_id: string;
+  name: string;
+  status: DomainRecord["status"];
+  data_json: string;
+  created_at: number;
+  updated_at: number;
+};
+
+const DomainRecordRowSchema = z.object({
+  id: z.number().int(),
+  tenant_id: z.string().min(1),
+  name: z.string(),
+  status: z.enum(["active", "inactive", "pending"]),
+  data_json: z.string(),
+  created_at: z.number().int(),
+  updated_at: z.number().int(),
+});
+
+const DomainDataSchema = z.record(z.unknown());
+
 // ─── Molécula ────────────────────────────────────────────────────────────────
 
 export class ExampleMolecule implements IMolecule {
-  readonly name = "example";   // ← Cambia al nombre de tu célula
+  readonly name = "example"; // ← Cambia al nombre de tu célula
   readonly version = "1.0.0";
 
   private db!: Database.Database;
@@ -97,35 +121,69 @@ export class ExampleMolecule implements IMolecule {
   // y se registra en cells/CellServer.ts
 
   /** Herramienta: create_record */
-  create(name: string, data: Record<string, unknown> = {}, tenantId = "default"): DomainRecord {
+  create(
+    name: string,
+    data: Record<string, unknown> = {},
+    tenantId = "default",
+  ): DomainRecord {
     const now = Date.now();
     const result = this.db
-      .prepare(`INSERT INTO domain_records (tenant_id, name, status, data_json, created_at, updated_at)
-                VALUES (?, ?, 'active', ?, ?, ?)`)
+      .prepare(
+        `INSERT INTO domain_records (tenant_id, name, status, data_json, created_at, updated_at)
+                VALUES (?, ?, 'active', ?, ?, ?)`,
+      )
       .run(tenantId, name, JSON.stringify(data), now, now);
-    log.info({ id: result.lastInsertRowid, name }, "Registro creado");
-    return this.getById(result.lastInsertRowid as number, tenantId)!;
+    const id = Number(result.lastInsertRowid);
+    log.info({ id, name }, "Registro creado");
+    const record = this.getById(id, tenantId);
+    if (!record) {
+      throw new MoleculeError(
+        this.name,
+        `No se pudo recuperar el registro recién creado (${id}).`,
+        { tenantId },
+      );
+    }
+    return record;
   }
 
   /** Herramienta: get_record */
   getById(id: number, tenantId = "default"): DomainRecord | null {
     const row = this.db
       .prepare(`SELECT * FROM domain_records WHERE id = ? AND tenant_id = ?`)
-      .get(id, tenantId) as any;
+      .get(id, tenantId);
     return row ? this.mapRow(row) : null;
   }
 
   /** Herramienta: list_records */
-  list(status?: string, limit = 50, tenantId = "default"): DomainRecord[] {
-    const rows = status
-      ? this.db.prepare(`SELECT * FROM domain_records WHERE tenant_id = ? AND status = ? ORDER BY created_at DESC LIMIT ?`).all(tenantId, status, limit) as any[]
-      : this.db.prepare(`SELECT * FROM domain_records WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?`).all(tenantId, limit) as any[];
-    return rows.map((r) => this.mapRow(r));
+  list(
+    status?: DomainRecord["status"],
+    limit = 50,
+    tenantId = "default",
+  ): DomainRecord[] {
+    const rows: unknown[] = status
+      ? this.db
+          .prepare(
+            `SELECT * FROM domain_records WHERE tenant_id = ? AND status = ? ORDER BY created_at DESC LIMIT ?`,
+          )
+          .all(tenantId, status, limit)
+      : this.db
+          .prepare(
+            `SELECT * FROM domain_records WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?`,
+          )
+          .all(tenantId, limit);
+    return rows.map((row) => this.mapRow(row));
   }
 
   /** Herramienta: update_record_status */
-  updateStatus(id: number, status: DomainRecord["status"], tenantId = "default"): DomainRecord | null {
-    this.db.prepare(`UPDATE domain_records SET status = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`)
+  updateStatus(
+    id: number,
+    status: DomainRecord["status"],
+    tenantId = "default",
+  ): DomainRecord | null {
+    this.db
+      .prepare(
+        `UPDATE domain_records SET status = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
+      )
       .run(status, Date.now(), id, tenantId);
     log.info({ id, status }, "Estado actualizado");
     return this.getById(id, tenantId);
@@ -140,15 +198,37 @@ export class ExampleMolecule implements IMolecule {
     return result.changes > 0;
   }
 
-  private mapRow(row: any): DomainRecord {
+  private mapRow(row: unknown): DomainRecord {
+    const parsedRow: DomainRecordRow = DomainRecordRowSchema.parse(row);
+    let parsedData: unknown;
+    try {
+      parsedData = JSON.parse(parsedRow.data_json);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new MoleculeError(
+        this.name,
+        `data_json no contiene JSON válido: ${message}`,
+        { id: parsedRow.id },
+      );
+    }
+
+    const dataResult = DomainDataSchema.safeParse(parsedData);
+    if (!dataResult.success) {
+      throw new MoleculeError(
+        this.name,
+        "data_json debe representar un objeto JSON.",
+        { id: parsedRow.id },
+      );
+    }
+
     return {
-      id: row.id,
-      tenantId: row.tenant_id,
-      name: row.name,
-      status: row.status,
-      data: JSON.parse(row.data_json ?? "{}"),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      id: parsedRow.id,
+      tenantId: parsedRow.tenant_id,
+      name: parsedRow.name,
+      status: parsedRow.status,
+      data: dataResult.data,
+      createdAt: parsedRow.created_at,
+      updatedAt: parsedRow.updated_at,
     };
   }
 }

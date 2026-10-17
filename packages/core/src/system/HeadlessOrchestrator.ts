@@ -523,14 +523,16 @@ export class HeadlessOrchestrator extends BaseOrchestrator {
    *
    * Si Jev tiene baja confianza → lanza `HeadlessEscalationError`.
    */
-  protected async *streamFromLLM(userMessage: string): AsyncGenerator<string> {
+  protected async *streamFromLLM(
+    userMessage: string,
+    _signal?: AbortSignal,
+  ): AsyncGenerator<string> {
     this.log.info("HeadlessOrchestrator: sin reflex — intentando routing Jev", {
       message: userMessage.substring(0, 80),
     });
 
     // Contexto conversacional reciente para que Jev resuelva pronombres
-    const recentHistory = this.history
-      .toMessages(this.sessionId)
+    const recentHistory = this.getHistory()
       .slice(-2)
       .filter(
         (
@@ -590,7 +592,7 @@ export class HeadlessOrchestrator extends BaseOrchestrator {
         // Guarda el patrón — próxima vez se resuelve en modo REFLEX (0 tokens)
         await this.saveReflex();
 
-        this.history.create(this.sessionId, {
+        this.addHistoryMessage(this.sessionId, {
           role: "assistant",
           content: result,
           timestamp: Date.now(),

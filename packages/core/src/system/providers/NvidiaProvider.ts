@@ -37,6 +37,29 @@ type UnknownRecord = Record<string, unknown>;
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function httpProviderError(status: number, phase: string): ProviderError {
+  const category =
+    status === 401 || status === 403
+      ? "authentication"
+      : status === 408
+        ? "timeout"
+        : status === 429
+          ? "rate_limit"
+          : status >= 500
+            ? "unavailable"
+            : "malformed_response";
+  return new ProviderError(
+    "nvidia",
+    category,
+    "Respuesta HTTP NVIDIA inválida",
+    {
+      status,
+      retryable: true,
+      safeContext: { phase },
+    },
+  );
+}
+
 function transportError(
   error: unknown,
   signal: AbortSignal | undefined,
@@ -72,6 +95,7 @@ function projectMessages(
       role: "tool",
       tool_call_id: message.toolCallId,
       content: message.content,
+      is_error: message.isError,
     };
   });
 }
@@ -107,8 +131,39 @@ function parseCompletion(value: unknown): LLMResponse {
       { retryable: true, safeContext: { field: "choices" } },
     );
   const choice = value.choices[0];
-  const message = isRecord(choice.message) ? choice.message : {};
-  const text = typeof message.content === "string" ? message.content : "";
+  const message = isRecord(choice.message) ? choice.message : undefined;
+  if (!message) {
+    throw new ProviderError(
+      "nvidia",
+      "malformed_response",
+      "Respuesta NVIDIA sin message",
+      { retryable: true, safeContext: { field: "choices[0].message" } },
+    );
+  }
+  const hasContent = Object.prototype.hasOwnProperty.call(message, "content");
+  const hasToolCalls = Object.prototype.hasOwnProperty.call(
+    message,
+    "tool_calls",
+  );
+  if (!hasContent && !hasToolCalls) {
+    throw new ProviderError(
+      "nvidia",
+      "malformed_response",
+      "Respuesta NVIDIA sin contenido ni tools",
+      { retryable: true, safeContext: { field: "message" } },
+    );
+  }
+  const text =
+    message.content === null || typeof message.content === "string"
+      ? (message.content ?? "")
+      : (() => {
+          throw new ProviderError(
+            "nvidia",
+            "malformed_response",
+            "Contenido NVIDIA inválido",
+            { retryable: true, safeContext: { field: "message.content" } },
+          );
+        })();
   const calls: LLMToolCall[] = [];
   if (message.tool_calls !== undefined) {
     if (!Array.isArray(message.tool_calls))
@@ -210,20 +265,7 @@ export class NvidiaProvider implements ILLMProvider {
     try {
       const response = await this.post(normalized, false);
       if (response.status < 200 || response.status >= 300)
-        throw new ProviderError(
-          "nvidia",
-          response.status === 429
-            ? "rate_limit"
-            : response.status >= 500
-              ? "unavailable"
-              : "authentication",
-          "Respuesta HTTP NVIDIA inválida",
-          {
-            status: response.status,
-            retryable: true,
-            safeContext: { phase: "complete" },
-          },
-        );
+        throw httpProviderError(response.status, "complete");
       return parseCompletion(response.data);
     } catch (error) {
       if (error instanceof ProviderError) throw error;
@@ -239,20 +281,7 @@ export class NvidiaProvider implements ILLMProvider {
     try {
       const response = await this.post(normalized, true);
       if (response.status < 200 || response.status >= 300)
-        throw new ProviderError(
-          "nvidia",
-          response.status === 429
-            ? "rate_limit"
-            : response.status >= 500
-              ? "unavailable"
-              : "authentication",
-          "Respuesta HTTP NVIDIA inválida",
-          {
-            status: response.status,
-            retryable: true,
-            safeContext: { phase: "stream" },
-          },
-        );
+        throw httpProviderError(response.status, "stream");
       const source = response.data;
       let buffer = "";
       let sawDone = false;
@@ -283,7 +312,11 @@ export class NvidiaProvider implements ILLMProvider {
             { retryable: true, safeContext: { phase: "stream" } },
           );
         }
-        if (!isRecord(parsed) || !Array.isArray(parsed.choices))
+        if (
+          !isRecord(parsed) ||
+          !Array.isArray(parsed.choices) ||
+          parsed.choices.length === 0
+        )
           throw new ProviderError(
             "nvidia",
             "malformed_response",
@@ -301,7 +334,13 @@ export class NvidiaProvider implements ILLMProvider {
               : outputTokens;
         }
         const choice = parsed.choices[0];
-        if (!isRecord(choice)) return undefined;
+        if (!isRecord(choice))
+          throw new ProviderError(
+            "nvidia",
+            "malformed_response",
+            "Choice SSE NVIDIA inválido",
+            { retryable: true, safeContext: { phase: "stream" } },
+          );
         if (choice.finish_reason !== null && choice.finish_reason !== undefined)
           finishReason = mapFinishReason(choice.finish_reason);
         const delta = isRecord(choice.delta) ? choice.delta : {};

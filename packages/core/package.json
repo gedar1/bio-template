@@ -27,7 +27,6 @@
     "cheerio": "^1.0.0-rc.12",
     "dotenv": "^16.4.7",
     "form-data": "^4.0.0",
-    "hnswlib-node": "^3.0.0",
     "jsonwebtoken": "^9.0.3",
     "nodemailer": "^6.9.8",
     "pino": "^10.3.1",
@@ -35,6 +34,14 @@
     "simple-git": "^3.22.0",
     "ws": "^8.20.0",
     "zod": "^3.24.1"
+  },
+  "peerDependencies": {
+    "hnswlib-node": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "hnswlib-node": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",

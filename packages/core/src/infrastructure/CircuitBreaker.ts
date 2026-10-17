@@ -1,31 +1,20 @@
 import { createLogger } from "../config/logger.js";
 import type { ILogger } from "../config/ILogger.js";
+import { CircuitOpenError, ProviderError } from "../errors.js";
 
 export type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
 
 export interface CircuitBreakerOptions {
-  /** Nombre del circuito (para logs) */
   name: string;
-  /** Fallos consecutivos para abrir el circuito */
   failureThreshold?: number;
-  /** Tiempo en ms antes de intentar recuperación (HALF_OPEN) */
   resetTimeout?: number;
-  /** Callback cuando el circuito se abre */
   onOpen?: () => void;
-  /** Callback cuando el circuito se cierra (recuperación) */
   onClose?: () => void;
-  /** Logger inyectable (fallback a createLogger si no se provee) */
+  /** Classifies failures that belong to the protected transport operation. */
+  isFailure?: (error: unknown) => boolean;
   logger?: ILogger;
 }
 
-/**
- * Circuit Breaker para proteger llamadas a servicios externos (LLMs, APIs).
- *
- * Estados:
- * - CLOSED: Funcionando normal, las llamadas pasan.
- * - OPEN: Demasiados fallos, las llamadas se rechazan inmediatamente.
- * - HALF_OPEN: Periodo de prueba, permite una llamada para verificar recuperación.
- */
 export class CircuitBreaker {
   private state: CircuitState = "CLOSED";
   private failureCount = 0;
@@ -36,6 +25,7 @@ export class CircuitBreaker {
   private readonly onOpen?: () => void;
   private readonly onClose?: () => void;
   private readonly log: ILogger;
+  private readonly isFailure: (error: unknown) => boolean;
 
   constructor(options: CircuitBreakerOptions) {
     this.name = options.name;
@@ -44,29 +34,22 @@ export class CircuitBreaker {
     this.onOpen = options.onOpen;
     this.onClose = options.onClose;
     this.log = options.logger ?? createLogger("CircuitBreaker");
+    this.isFailure = options.isFailure ?? defaultFailureClassifier;
   }
 
   getState(): CircuitState {
     return this.state;
   }
-
   getFailureCount(): number {
     return this.failureCount;
   }
-
   getLastFailureTime(): number {
     return this.lastFailureTime;
   }
-
   getResetTimeout(): number {
     return this.resetTimeout;
   }
 
-  /**
-   * Ejecuta una función protegida por el circuit breaker.
-   * Si el circuito está abierto, lanza error inmediatamente.
-   * Si está half-open, permite un intento de prueba.
-   */
   async execute<T>(fn: () => Promise<T>): Promise<T> {
     if (this.state === "OPEN") {
       if (Date.now() - this.lastFailureTime >= this.resetTimeout) {
@@ -75,11 +58,9 @@ export class CircuitBreaker {
           circuit: this.name,
         });
       } else {
-        const err = new Error(
-          `Circuito '${this.name}' abierto. Reintenta en ${Math.ceil((this.resetTimeout - (Date.now() - this.lastFailureTime)) / 1000)}s`,
-        );
-        this.log.warn(err.message, { circuit: this.name, state: this.state });
-        throw err;
+        const error = new CircuitOpenError(this.name);
+        this.log.warn(error.message, { circuit: this.name, state: this.state });
+        throw error;
       }
     }
 
@@ -87,8 +68,10 @@ export class CircuitBreaker {
       const result = await fn();
       this.onSuccess();
       return result;
-    } catch (error) {
-      this.onFailure();
+    } catch (error: unknown) {
+      if (this.isFailure(error) && !(error instanceof CircuitOpenError)) {
+        this.onFailure();
+      }
       throw error;
     }
   }
@@ -105,9 +88,8 @@ export class CircuitBreaker {
   }
 
   private onFailure(): void {
-    this.failureCount++;
+    this.failureCount += 1;
     this.lastFailureTime = Date.now();
-
     if (this.failureCount >= this.failureThreshold) {
       this.state = "OPEN";
       this.log.error("Circuito ABIERTO por exceso de fallos", {
@@ -125,11 +107,17 @@ export class CircuitBreaker {
     }
   }
 
-  /** Resetea el circuito manualmente */
   reset(): void {
     this.state = "CLOSED";
     this.failureCount = 0;
     this.lastFailureTime = 0;
     this.log.info("Circuito reseteado manualmente", { circuit: this.name });
   }
+}
+
+function defaultFailureClassifier(error: unknown): boolean {
+  if (!(error instanceof ProviderError)) return false;
+  return !["cancelled", "internal", "missing_key", "circuit_open"].includes(
+    error.category,
+  );
 }

@@ -25,7 +25,7 @@ import { z } from "zod";
 import * as dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 import { createLogger } from "../config/logger.js";
-import { TenantManager } from "./TenantManager.js";
+import { TenantManager, type TenantManagerDeps } from "./TenantManager.js";
 
 dotenv.config();
 
@@ -314,8 +314,12 @@ function createBiocoreMcpServer(tenantManager: TenantManager): McpServer {
 
 // ─── HTTP Server con Streamable HTTP Transport ────────────────────────────────
 
-export async function startMCPHttpServer(port: number = 3100): Promise<void> {
-  const tenantManager = new TenantManager();
+export async function startMCPHttpServer(
+  port: number = 3100,
+  deps: TenantManagerDeps = {},
+): Promise<void> {
+  // MCP standalone has no platform registry or metrics unless explicitly injected.
+  const tenantManager = new TenantManager(deps);
   const transports = new Map<string, StreamableHTTPServerTransport>();
 
   const httpServer = createServer(

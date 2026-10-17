@@ -1,12 +1,15 @@
-import { GeminiCortex } from "../system/implementations/GeminiCortex.js";
 import { UnifiedCortex } from "../system/implementations/UnifiedCortex.js";
-import { NvidiaCortex } from "../system/implementations/NvidiaCortex.js";
-import { BaseOrchestrator } from "../system/BaseOrchestrator.js";
+import {
+  DEFAULT_LLM_PROVIDER_CONFIG,
+  LLMProviderNameSchema,
+  resolveInitialProvider,
+  type LLMProviderConfig,
+  type LLMProviderName,
+} from "../config/llmTypes.js";
 import { BaseOrganisms } from "../organisms/BaseOrganisms.js";
 import { createLogger } from "../config/logger.js";
-import { TenantError } from "../errors.js";
+import { TenantError, ValidationError } from "../errors.js";
 import {
-  registerDomainProfile,
   getAvailableProfiles,
   getDefaultProfile,
 } from "../config/profileRegistry.js";
@@ -14,68 +17,49 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getModuleDir } from "../atoms/paths.js";
 import type { TenantRegistryService } from "./services/TenantRegistryService.js";
-import type { UsageMetricsCollector } from "./services/UsageMetricsCollector.js";
+import type { IUsageMetricsSink } from "../system/interfaces/IUsageMetricsSink.js";
+import type { CircuitState } from "../infrastructure/CircuitBreaker.js";
 
 const __dirname = getModuleDir(import.meta.url);
 
 const log = createLogger("TenantManager");
 
-// Cargar perfiles de tenant — buscar en múltiples ubicaciones
-function loadTenantProfiles(): {
+const tenantProfiles: {
   profiles: Record<string, TenantProfile>;
   defaultProfile: string;
-} {
-  const paths = [
-    join(__dirname, "../config/tenant-profiles.json"),
-    join(__dirname, "../../config/tenant-profiles.json"),
-    join(process.cwd(), "src/biocore/config/tenant-profiles.json"),
-    join(process.cwd(), "dist/biocore/config/tenant-profiles.json"),
-  ];
-
-  for (const p of paths) {
-    try {
-      const content = readFileSync(p, "utf-8");
-      return JSON.parse(content);
-    } catch {
-      // intentar siguiente path
-    }
-  }
-
-  // Fallback: perfil dev por defecto
-  return {
-    profiles: {
-      dev: {
-        description: "Desarrollo de software",
-        allowedCells: [],
-        agentFile: "dev-agent.md",
+} = {
+  profiles: Object.fromEntries(
+    Object.entries(getAvailableProfiles()).map(([profileId, profile]) => [
+      profileId,
+      {
+        description: profile.description ?? "",
+        allowedCells: profile.allowedCells,
+        agentFile: profile.agentFile,
       },
-    },
-    defaultProfile: "dev",
-  };
-}
-
-const tenantProfiles = loadTenantProfiles();
-
-// Register JSON-loaded profiles in the composed profile registry
-// so they're also available via getAvailableProfiles()
-for (const [profileId, profileConfig] of Object.entries(
-  tenantProfiles.profiles,
-)) {
-  try {
-    registerDomainProfile(profileId, profileConfig);
-  } catch {
-    // Skip profiles that don't pass registry validation (e.g. empty allowedCells)
-    log.debug(
-      { profileId },
-      "Skipped registering profile in registry (validation failed)",
-    );
-  }
-}
+    ]),
+  ),
+  defaultProfile: getDefaultProfile(),
+};
 
 export interface TenantProfile {
   description: string;
   allowedCells: string[];
   agentFile: string;
+}
+
+export interface TenantManagerDeps {
+  readonly maxTenants?: number;
+  readonly idleTimeoutMs?: number;
+  readonly registry?: TenantRegistryService;
+  readonly metrics?: IUsageMetricsSink;
+}
+
+export interface CircuitBreakerSnapshot {
+  readonly provider: LLMProviderName;
+  readonly state: CircuitState;
+  readonly failureCount: number;
+  readonly lastFailureTimestamp: number | null;
+  readonly estimatedRecoveryMs: number | null;
 }
 
 class TenantOrganism extends BaseOrganisms {
@@ -89,7 +73,7 @@ class TenantOrganism extends BaseOrganisms {
 
 export interface TenantInfo {
   id: string;
-  cortex: BaseOrchestrator;
+  cortex: UnifiedCortex;
   profile: string;
   createdAt: number;
   lastActivity: number;
@@ -106,24 +90,25 @@ export class TenantManager {
   private readonly maxTenants: number;
   private readonly idleTimeoutMs: number;
   private readonly registry: TenantRegistryService | null;
-  private readonly metricsCollector: UsageMetricsCollector | null;
+  private readonly metrics: IUsageMetricsSink | null;
+  private readonly tenantQueues = new Map<string, Promise<void>>();
+  private desiredConfig: LLMProviderConfig;
 
-  constructor(
-    maxTenants: number = 50,
-    idleTimeoutMs: number = 30 * 60 * 1000,
-    registry?: TenantRegistryService,
-    metricsCollector?: UsageMetricsCollector,
-  ) {
-    this.maxTenants = maxTenants;
-    this.idleTimeoutMs = idleTimeoutMs;
-    this.registry = registry ?? null;
-    this.metricsCollector = metricsCollector ?? null;
+  constructor(deps: TenantManagerDeps = {}) {
+    this.maxTenants = deps.maxTenants ?? 50;
+    this.idleTimeoutMs = deps.idleTimeoutMs ?? 30 * 60 * 1000;
+    this.registry = deps.registry ?? null;
+    this.metrics = deps.metrics ?? null;
+    this.desiredConfig = normalizeProviderConfig({
+      primaryProvider: resolveInitialProvider(process.env.LLM_PROVIDER),
+      fallbackOrder: [...DEFAULT_LLM_PROVIDER_CONFIG.fallbackOrder],
+    });
   }
 
   /**
    * Obtiene o crea un Cortex para el tenant indicado.
    * @param tenantId - Identificador único del tenant
-   * @param profileName - Perfil de industria (default: env TENANT_PROFILE o "dev")
+   * @param profileName - Perfil de dominio (default: env TENANT_PROFILE o el perfil editable)
    */
   async getTenant(tenantId: string, profileName?: string): Promise<TenantInfo> {
     const existing = this.tenants.get(tenantId);
@@ -169,16 +154,13 @@ export class TenantManager {
 
     log.info({ tenantId, profile }, "Creando nuevo tenant");
 
-    const provider = process.env.LLM_PROVIDER || "unified";
-    let cortex: BaseOrchestrator;
-
-    if (provider === "unified") {
-      cortex = new UnifiedCortex();
-    } else if (provider === "nvidia") {
-      cortex = new NvidiaCortex();
-    } else {
-      cortex = new GeminiCortex();
-    }
+    const cortex = new UnifiedCortex({
+      tenantId,
+      primaryProvider: this.desiredConfig.primaryProvider,
+      fallbackOrder: [...this.desiredConfig.fallbackOrder],
+      metrics: this.metrics ?? undefined,
+      tenantLimits: this.registry ?? undefined,
+    });
 
     // Obtener allowedCells del perfil — primero buscar en composed profiles,
     // luego fallback a los perfiles cargados del JSON
@@ -194,7 +176,7 @@ export class TenantManager {
     if (profileConfig?.agentFile) {
       const agentPrompt = this.loadAgentFile(profileConfig.agentFile);
       if (agentPrompt) {
-        cortex["history"].create(cortex.getSessionId(), {
+        cortex.addHistoryMessage(cortex.getSessionId(), {
           role: "system",
           content: agentPrompt,
           timestamp: Date.now(),
@@ -211,16 +193,6 @@ export class TenantManager {
       needsReload: false,
     };
 
-    // Wire metrics collector into cortex (if available and cortex supports it)
-    if (this.metricsCollector && cortex instanceof UnifiedCortex) {
-      cortex.setMetricsCollector(this.metricsCollector, tenantId);
-    }
-
-    // Wire tenant registry into cortex for token limit enforcement
-    if (this.registry && cortex instanceof UnifiedCortex) {
-      cortex.setTenantRegistry(this.registry);
-    }
-
     this.tenants.set(tenantId, tenant);
     log.info(
       { tenantId, profile, totalTenants: this.tenants.size },
@@ -229,32 +201,69 @@ export class TenantManager {
     return tenant;
   }
 
+  /** Instala una configuración efectiva para tenants existentes y futuros. */
+  reconfigureAll(config: LLMProviderConfig): void {
+    const next = normalizeProviderConfig(config);
+    this.desiredConfig = next;
+    for (const tenant of this.tenants.values()) {
+      tenant.cortex.reconfigure({
+        primaryProvider: next.primaryProvider,
+        fallbackOrder: [...next.fallbackOrder],
+      });
+    }
+  }
+
+  /** Devuelve la configuración efectiva usada por tráfico multi-tenant. */
+  getProviderConfig(): LLMProviderConfig {
+    return {
+      primaryProvider: this.desiredConfig.primaryProvider,
+      fallbackOrder: [...this.desiredConfig.fallbackOrder],
+    };
+  }
+
+  /** Devuelve breakers de todos los Cortex de tráfico, sin compartirlos entre tenants. */
+  getCircuitBreakerSnapshot(): CircuitBreakerSnapshot[] {
+    const snapshots: CircuitBreakerSnapshot[] = [];
+    for (const tenant of this.tenants.values()) {
+      for (const [provider, breaker] of tenant.cortex.getCircuitBreakers()) {
+        const state = breaker.getState();
+        const lastFailureTime = breaker.getLastFailureTime();
+        snapshots.push({
+          provider,
+          state,
+          failureCount: breaker.getFailureCount(),
+          lastFailureTimestamp: lastFailureTime > 0 ? lastFailureTime : null,
+          estimatedRecoveryMs:
+            state === "OPEN" && lastFailureTime > 0
+              ? Math.max(
+                  0,
+                  breaker.getResetTimeout() - (Date.now() - lastFailureTime),
+                )
+              : null,
+        });
+      }
+    }
+    return snapshots;
+  }
+
   /**
    * Envía un mensaje al Cortex de un tenant.
    */
   async chat(tenantId: string, message: string): Promise<string> {
-    const tenant = await this.getTenant(tenantId);
-    tenant.lastActivity = Date.now();
-
-    const beforeSize = tenant.cortex.getHistory().length;
-
+    const release = await this.acquireTenant(tenantId);
     try {
+      const tenant = await this.getTenant(tenantId);
+      tenant.lastActivity = Date.now();
+      const beforeSize = tenant.cortex.getHistory().length;
       await tenant.cortex.chat(message);
-
       const messages = tenant.cortex.getHistory();
-      const newMessages = messages.slice(beforeSize);
-      const assistantMsg = newMessages
-        .filter((m) => m.role === "assistant")
+      const assistantMsg = messages
+        .slice(beforeSize)
+        .filter((entry) => entry.role === "assistant")
         .pop();
-
-      // Record task_completed event
-      this.recordTaskMetric(tenantId, "task_completed");
-
       return assistantMsg?.content || "Sin respuesta";
-    } catch (error: any) {
-      // Record task_error event
-      this.recordTaskMetric(tenantId, "task_error");
-      throw error;
+    } finally {
+      release();
     }
   }
 
@@ -262,10 +271,36 @@ export class TenantManager {
    * Stream de respuesta del Cortex de un tenant.
    * Yields chunks de texto conforme el LLM los genera.
    */
-  async *chatStream(tenantId: string, message: string): AsyncGenerator<string> {
-    const tenant = await this.getTenant(tenantId);
-    tenant.lastActivity = Date.now();
-    yield* tenant.cortex.chatStream(message);
+  async *chatStream(
+    tenantId: string,
+    message: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<string> {
+    const release = await this.acquireTenant(tenantId);
+    try {
+      const tenant = await this.getTenant(tenantId);
+      tenant.lastActivity = Date.now();
+      yield* tenant.cortex.chatStream(message, signal);
+    } finally {
+      release();
+    }
+  }
+
+  private async acquireTenant(tenantId: string): Promise<() => void> {
+    const previous = this.tenantQueues.get(tenantId) ?? Promise.resolve();
+    let releasePromise: () => void = () => undefined;
+    const current = new Promise<void>((resolve) => {
+      releasePromise = resolve;
+    });
+    const queued = previous.then(() => current);
+    this.tenantQueues.set(tenantId, queued);
+    await previous;
+    return () => {
+      releasePromise();
+      if (this.tenantQueues.get(tenantId) === queued) {
+        this.tenantQueues.delete(tenantId);
+      }
+    };
   }
 
   /** Elimina un tenant y libera recursos */
@@ -292,24 +327,6 @@ export class TenantManager {
     tenant.needsReload = true;
     log.info({ tenantId }, "Session marked for reload on next request");
     return true;
-  }
-
-  /**
-   * Safely records a task lifecycle metric. No-op if no collector is set.
-   */
-  private recordTaskMetric(
-    tenantId: string,
-    eventType: "task_completed" | "task_error",
-  ): void {
-    if (!this.metricsCollector) return;
-    try {
-      this.metricsCollector.record(tenantId, eventType, 1);
-    } catch (err: any) {
-      log.warn(
-        { tenantId, eventType, error: err.message },
-        "Failed to record task metric (non-fatal)",
-      );
-    }
   }
 
   /** Elimina tenants que llevan más de idleTimeoutMs sin actividad */
@@ -403,6 +420,9 @@ export class TenantManager {
   /** Carga el archivo .md del agente de dominio */
   private loadAgentFile(filename: string): string | null {
     const paths = [
+      join(__dirname, "../", filename),
+      join(__dirname, "../../src", filename),
+      join(process.cwd(), "packages/core/src", filename),
       join(__dirname, "../config/agents", filename),
       join(__dirname, "../../config/agents", filename),
       join(process.cwd(), "packages/core/dist/config/agents", filename),
@@ -429,4 +449,37 @@ export class TenantManager {
   get size(): number {
     return this.tenants.size;
   }
+}
+
+function normalizeProviderConfig(config: LLMProviderConfig): LLMProviderConfig {
+  if (!LLMProviderNameSchema.safeParse(config.primaryProvider).success) {
+    throw new ValidationError(
+      `Proveedor LLM desconocido: ${String(config.primaryProvider)}`,
+    );
+  }
+
+  const fallback = [...config.fallbackOrder];
+  for (const provider of fallback) {
+    if (!LLMProviderNameSchema.safeParse(provider).success) {
+      throw new ValidationError(
+        `Proveedor fallback desconocido: ${String(provider)}`,
+      );
+    }
+  }
+
+  const uniqueFallback = [
+    ...new Set(
+      fallback.filter((provider) => provider !== config.primaryProvider),
+    ),
+  ];
+  if (uniqueFallback.length === 0) {
+    throw new ValidationError(
+      "La configuración multi-tenant requiere al menos un fallback",
+    );
+  }
+
+  return {
+    primaryProvider: config.primaryProvider,
+    fallbackOrder: uniqueFallback,
+  };
 }

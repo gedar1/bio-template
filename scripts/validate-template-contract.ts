@@ -37,6 +37,8 @@ const REQUIRED_FILES = [
   "packages/core/src/config/domain-agent.md",
   "packages/core/src/config/profileRegistry.ts",
   "packages/core/src/molecules/ExampleMolecule.ts",
+  "packages/core/src/config/applicationComposition.ts",
+  "packages/core/src/application-cell.ts",
   "scripts/validate-template-contract.ts",
   ".kiro/hooks/validate-template-contract.kiro.hook",
   ".kiro/hooks/update-docs-on-task.kiro.hook",

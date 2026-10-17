@@ -159,6 +159,89 @@ describe("provider contracts", () => {
     expect(response.finishReason).toBe("stop");
   });
 
+  it("accumulates Gemini usage across stream chunks", async () => {
+    const chunks = [
+      {
+        candidates: [{ content: { parts: [{ text: "a" }] } }],
+        usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3 },
+      },
+      {
+        candidates: [
+          {
+            content: { parts: [{ text: "b" }] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 5 },
+      },
+    ];
+    const client: GeminiClient = {
+      getGenerativeModel: vi.fn(() => ({
+        startChat: vi.fn(() => ({
+          sendMessageStream: vi.fn(async () => ({
+            stream: (async function* () {
+              for (const chunk of chunks) yield chunk;
+            })(),
+          })),
+        })),
+      })),
+    };
+    const provider = new GeminiProvider({
+      env: { GOOGLE_API_KEY: "google-key" },
+      client,
+    });
+    const events: LLMStreamEvent[] = [];
+    for await (const event of provider.stream(request)) events.push(event);
+    const completed = events.find((event) => event.type === "completed");
+    expect(completed && completed.type === "completed").toBe(true);
+    if (completed?.type === "completed") {
+      expect(completed.response.usage).toEqual({
+        inputTokens: 6,
+        outputTokens: 8,
+        totalTokens: 14,
+      });
+    }
+  });
+
+  it("classifies NVIDIA client errors and rejects empty SSE choices", async () => {
+    const http: IHttpClient = {
+      post: vi.fn(async () => ({
+        status: 400,
+        data: { error: "invalid request" },
+      })),
+    };
+    const provider = new NvidiaProvider({
+      env: { NVIDIA_API_KEY: "nvidia-key" },
+      httpClient: http,
+    });
+    await expect(provider.complete(request)).rejects.toMatchObject({
+      category: "malformed_response",
+      status: 400,
+    });
+
+    const streamHttp: IHttpClient = {
+      post: vi.fn(async () => ({
+        status: 200,
+        data: (async function* () {
+          yield `data: ${JSON.stringify({ choices: [] })}\\n\\n`;
+          yield "data: [DONE]\\n\\n";
+        })(),
+      })),
+    };
+    const streamProvider = new NvidiaProvider({
+      env: { NVIDIA_API_KEY: "nvidia-key" },
+      httpClient: streamHttp,
+    });
+    const consume = async () => {
+      for await (const _event of streamProvider.stream(request)) {
+        // consume until the malformed chunk is observed
+      }
+    };
+    await expect(consume()).rejects.toMatchObject({
+      category: "malformed_response",
+    });
+  });
+
   it("parses NVIDIA SSE with interleaved tool arguments and one completed event", async () => {
     const partialArguments = JSON.stringify({ key: "x" }).slice(0, -1);
     const chunks = [

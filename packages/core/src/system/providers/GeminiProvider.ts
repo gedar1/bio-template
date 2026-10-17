@@ -70,30 +70,16 @@ function transportError(
   return providerError("gemini", error, phase);
 }
 
+interface GeminiToolCorrelation {
+  readonly id: string;
+  readonly name: string;
+  readonly index: number;
+}
 interface GeminiProjection {
   readonly systemInstruction?: string;
   readonly history: readonly UnknownRecord[];
   readonly current: readonly UnknownRecord[];
-}
-function messageParts(message: LLMMessage): readonly UnknownRecord[] {
-  if (message.role === "user") return [{ text: message.content }];
-  if (message.role === "assistant")
-    return [
-      ...(message.content ? [{ text: message.content }] : []),
-      ...message.toolCalls.map((call) => ({
-        functionCall: { name: call.name, args: call.arguments },
-      })),
-    ];
-  if (message.role === "tool")
-    return [
-      {
-        functionResponse: {
-          name: message.name,
-          response: { content: message.content, isError: message.isError },
-        },
-      },
-    ];
-  return [];
+  readonly correlation: readonly GeminiToolCorrelation[];
 }
 function projectMessages(messages: readonly LLMMessage[]): GeminiProjection {
   const systemParts = messages
@@ -101,13 +87,53 @@ function projectMessages(messages: readonly LLMMessage[]): GeminiProjection {
     .map((message) => message.content);
   const nonSystem = messages.filter((message) => message.role !== "system");
   const grouped: UnknownRecord[] = [];
+  const calls = new Map<string, GeminiToolCorrelation>();
+  const correlation: GeminiToolCorrelation[] = [];
+  let callIndex = 0;
+  let lastToolResultIndex = -1;
+
   for (const message of nonSystem) {
     const role = message.role === "assistant" ? "model" : "user";
-    const parts = messageParts(message);
+    const parts: UnknownRecord[] = [];
+    if (message.role === "user") {
+      parts.push({ text: message.content });
+    } else if (message.role === "assistant") {
+      if (message.content) parts.push({ text: message.content });
+      for (const call of message.toolCalls) {
+        const entry = { id: call.id, name: call.name, index: callIndex++ };
+        calls.set(call.id, entry);
+        correlation.push(entry);
+        parts.push({ functionCall: { name: call.name, args: call.arguments } });
+      }
+    } else if (message.role === "tool") {
+      const entry = calls.get(message.toolCallId);
+      if (
+        !entry ||
+        entry.name !== message.name ||
+        entry.index < lastToolResultIndex
+      ) {
+        throw new ProviderError(
+          "gemini",
+          "malformed_response",
+          "Correlación de tool Gemini inválida",
+          { retryable: false, safeContext: { field: "functionResponse" } },
+        );
+      }
+      lastToolResultIndex = entry.index;
+      parts.push({
+        functionResponse: {
+          name: entry.name,
+          response: {
+            content: message.content,
+            isError: message.isError,
+          },
+        },
+      });
+    }
     const previous = grouped[grouped.length - 1];
     if (previous?.role === role && Array.isArray(previous.parts))
       previous.parts.push(...parts);
-    else grouped.push({ role, parts: [...parts] });
+    else grouped.push({ role, parts });
   }
   const last = grouped.pop();
   const current =
@@ -118,6 +144,7 @@ function projectMessages(messages: readonly LLMMessage[]): GeminiProjection {
       : {}),
     history: grouped,
     current,
+    correlation,
   };
 }
 
@@ -152,6 +179,14 @@ function responseToCommon(
   const candidate = candidates[0];
   const content =
     candidate && isRecord(candidate.content) ? candidate.content : undefined;
+  if (candidate && !content) {
+    throw new ProviderError(
+      "gemini",
+      "malformed_response",
+      "Respuesta Gemini sin contenido",
+      { retryable: true, safeContext: { field: "candidate.content" } },
+    );
+  }
   const parts = content && Array.isArray(content.parts) ? content.parts : [];
   const textParts: string[] = [];
   const toolCalls: LLMToolCall[] = [];
@@ -164,9 +199,36 @@ function responseToCommon(
         "Parte Gemini inválida",
         { retryable: true, safeContext: { field: "parts" } },
       );
-    if (typeof part.text === "string") textParts.push(part.text);
-    if (isRecord(part.functionCall)) {
-      if (typeof part.functionCall.name !== "string")
+    const hasText = Object.prototype.hasOwnProperty.call(part, "text");
+    const hasFunctionCall = Object.prototype.hasOwnProperty.call(
+      part,
+      "functionCall",
+    );
+    if (hasText && typeof part.text !== "string")
+      throw new ProviderError(
+        "gemini",
+        "malformed_response",
+        "Texto Gemini inválido",
+        { retryable: true, safeContext: { field: "parts.text" } },
+      );
+    if (hasFunctionCall && !isRecord(part.functionCall))
+      throw new ProviderError(
+        "gemini",
+        "malformed_response",
+        "Function call Gemini inválida",
+        { retryable: true, safeContext: { field: "parts.functionCall" } },
+      );
+    if (!hasText && !hasFunctionCall)
+      throw new ProviderError(
+        "gemini",
+        "malformed_response",
+        "Parte Gemini no soportada",
+        { retryable: true, safeContext: { field: "parts" } },
+      );
+    if (hasText) textParts.push(part.text as string);
+    if (hasFunctionCall) {
+      const functionCall = part.functionCall as UnknownRecord;
+      if (typeof functionCall.name !== "string")
         throw new ProviderError(
           "gemini",
           "malformed_response",
@@ -175,8 +237,8 @@ function responseToCommon(
         );
       toolCalls.push({
         id: `gemini-${requestId}-${callIndex++}`,
-        name: part.functionCall.name,
-        arguments: asObject(part.functionCall.args ?? {}, "functionCall.args"),
+        name: functionCall.name,
+        arguments: asObject(functionCall.args ?? {}, "functionCall.args"),
       });
     }
   }
@@ -316,7 +378,8 @@ export class GeminiProvider implements ILLMProvider {
       const requestId = `request-${Date.now()}`;
       const textParts: string[] = [];
       const toolCalls: LLMToolCall[] = [];
-      let usage = normalizeUsage(0, 0);
+      let inputTokens = 0;
+      let outputTokens = 0;
       let finishReason: LLMResponse["finishReason"] = "unknown";
       for await (const chunk of streamResult.stream as AsyncIterable<unknown>) {
         responses.push(chunk);
@@ -330,7 +393,8 @@ export class GeminiProvider implements ILLMProvider {
           yield { type: "text_delta", text: parsed.text };
         }
         toolCalls.push(...parsed.toolCalls);
-        usage = parsed.usage;
+        inputTokens += parsed.usage.inputTokens;
+        outputTokens += parsed.usage.outputTokens;
         if (parsed.finishReason !== "unknown")
           finishReason = parsed.finishReason;
       }
@@ -344,7 +408,12 @@ export class GeminiProvider implements ILLMProvider {
       if (toolCalls.length > 0) finishReason = "tool_use";
       yield {
         type: "completed",
-        response: { text: textParts.join(""), toolCalls, usage, finishReason },
+        response: {
+          text: textParts.join(""),
+          toolCalls,
+          usage: normalizeUsage(inputTokens, outputTokens),
+          finishReason,
+        },
       };
     } catch (error) {
       if (error instanceof ProviderError) throw error;

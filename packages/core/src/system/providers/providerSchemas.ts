@@ -196,7 +196,7 @@ function validateMessage(message: LLMMessage, index: number): void {
 }
 
 function validateTranscript(messages: readonly LLMMessage[]): void {
-  const knownCalls = new Set<string>();
+  const knownCalls = new Map<string, string>();
   const completedCalls = new Set<string>();
   let pending: readonly string[] = [];
 
@@ -214,8 +214,15 @@ function validateTranscript(messages: readonly LLMMessage[]): void {
           `Tool result sin assistant previo en messages[${index}]`,
         );
       }
-      if (!message.toolCallId.trim() || !message.name.trim()) {
-        throw new ValidationError(`Tool result inválido en messages[${index}]`);
+      const expectedName = knownCalls.get(message.toolCallId);
+      if (
+        !message.toolCallId.trim() ||
+        !message.name.trim() ||
+        expectedName !== message.name
+      ) {
+        throw new ValidationError(
+          `Tool result no coincide con su llamada en messages[${index}]`,
+        );
       }
       completedCalls.add(message.toolCallId);
       pending = pending.filter((id) => id !== message.toolCallId);
@@ -232,7 +239,7 @@ function validateTranscript(messages: readonly LLMMessage[]): void {
       for (const call of message.toolCalls) {
         if (knownCalls.has(call.id))
           throw new ValidationError(`Tool call duplicada: ${call.id}`);
-        knownCalls.add(call.id);
+        knownCalls.set(call.id, call.name);
       }
       pending = message.toolCalls.map((call) => call.id);
     }
@@ -368,6 +375,7 @@ export function providerError(
   const status = typeof statusValue === "number" ? statusValue : undefined;
   const message =
     error instanceof Error ? error.message : "Error de transporte del provider";
+  const errorMessage = message.toLowerCase();
   const category =
     status === 401 || status === 403
       ? "authentication"
@@ -375,10 +383,13 @@ export function providerError(
         ? "rate_limit"
         : status !== undefined && status >= 500
           ? "unavailable"
-          : "network";
+          : errorMessage.includes("timeout") ||
+              errorMessage.includes("timed out")
+            ? "timeout"
+            : "internal";
   return new ProviderError(provider, category, message, {
     status,
-    retryable: true,
+    retryable: category !== "internal",
     safeContext: { phase },
   });
 }
