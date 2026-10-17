@@ -6,10 +6,8 @@ import {
 initTelemetry();
 
 import * as dotenv from "dotenv";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { getModuleDir } from "../atoms/paths.js";
 import { HealthServer } from "./HealthServer.js";
 import { TenantManager } from "./TenantManager.js";
 import { ReplServer } from "./ReplServer.js";
@@ -23,8 +21,7 @@ import { registerAllRoutes } from "./RouteRegistry.js";
 import { SettingsManager } from "./SettingsManager.js";
 import { TemplateStateStore } from "./TemplateStateStore.js";
 import { UnifiedCortex } from "../system/implementations/UnifiedCortex.js";
-import { mergeRegistry, type Registry } from "../config/mergeRegistry.js";
-import { registerDomainProfile } from "../config/profileRegistry.js";
+import type { Registry } from "../config/mergeRegistry.js";
 import { isPlatformEnabled } from "./middleware/platformAuth.js";
 import { initializePlatformSchema } from "./services/platformSchema.js";
 import { TenantRegistryService } from "./services/TenantRegistryService.js";
@@ -39,6 +36,7 @@ import Database from "better-sqlite3";
 dotenv.config();
 
 const log = createLogger("ProductionServer");
+const require = createRequire(import.meta.url);
 
 /**
  * Entry point de producción con multi-tenancy.
@@ -69,73 +67,17 @@ async function main() {
     );
   }
 
-  // 1. Registry composition — load core registry and merge with domain if available
-  let composedRegistry: Registry;
-  const __dirname = getModuleDir(import.meta.url);
-  const coreRegistryPath = join(__dirname, "../config/registry.json");
+  // 1. Core registry — domain applications inject their composition at their entrypoint.
+  const composedRegistry = require("../config/registry.json") as Registry;
+  log.info(
+    { totalCells: composedRegistry.cells.length },
+    "Core registry loaded",
+  );
 
-  try {
-    const coreRegistryRaw = readFileSync(coreRegistryPath, "utf-8");
-    const coreRegistry: Registry = JSON.parse(coreRegistryRaw) as Registry;
-
-    // Attempt to load domain package based on TENANT_PROFILE environment variable
-    const tenantProfile = process.env.TENANT_PROFILE;
-    let domainRegistry: Registry | undefined;
-
-    if (tenantProfile === "restaurant") {
-      try {
-        // Dynamic import — restaurant is an optional runtime dependency, not a compile-time one
-        const domainPkgName = "@bio/restaurant";
-        const restaurantPkg: any = await import(domainPkgName);
-        if (restaurantPkg) {
-          // Register domain profile
-          registerDomainProfile(
-            restaurantPkg.RESTAURANT_PROFILE_ID,
-            restaurantPkg.restaurantProfile,
-          );
-          domainRegistry = restaurantPkg.restaurantRegistry;
-          log.info(
-            { profile: tenantProfile },
-            "Domain package loaded and profile registered",
-          );
-        }
-      } catch (importErr: any) {
-        log.warn(
-          { error: importErr.message, profile: tenantProfile },
-          "Could not load domain package — continuing with core registry only",
-        );
-      }
-    }
-
-    composedRegistry = mergeRegistry(coreRegistry, domainRegistry);
-    log.info(
-      { totalCells: composedRegistry.cells.length },
-      "Registry composition complete",
-    );
-  } catch (err: any) {
-    log.error(
-      { error: err.message },
-      "Failed to compose registry — using empty fallback",
-    );
-    composedRegistry = { cells: [] };
-  }
-
-  const tenantManager = new TenantManager();
   const scheduler = new Scheduler();
   const health = new HealthServer();
   const perfMonitor = new PerfMonitor();
   const logBuffer = new LogBuffer(1000);
-
-  // Settings subsystem: TemplateStateStore + UnifiedCortex + SettingsManager
-  const templateStateStore = new TemplateStateStore(
-    process.env.DATABASE_PATH || "./data/biocore-shared.db",
-  );
-  const cortex = new UnifiedCortex();
-  const settingsManager = new SettingsManager({
-    cortex,
-    tenantManager,
-    templateState: templateStateStore,
-  });
 
   // Connect LogBuffer to Pino logger via onWrite hook
   // This captures all log entries and feeds them to the SSE stream
@@ -228,6 +170,32 @@ async function main() {
     );
   }
 
+  // TenantManager is created only after platform services so every traffic
+  // Cortex receives the same registry/metrics dependencies when available.
+  const tenantManager = new TenantManager({
+    registry: platformRegistry,
+    metrics: platformMetricsCollector,
+  });
+  if (platformRegistry) {
+    platformRegistry.setProfileChangeCallback((tenantId) => {
+      tenantManager.markForReload(tenantId);
+    });
+  }
+
+  // Settings subsystem: TenantManager is authoritative for traffic config.
+  const templateStateStore = new TemplateStateStore(
+    process.env.DATABASE_PATH || "./data/biocore-shared.db",
+  );
+  const cortex = new UnifiedCortex({
+    metrics: platformMetricsCollector,
+    tenantLimits: platformRegistry,
+  });
+  const settingsManager = new SettingsManager({
+    cortex,
+    tenantManager,
+    templateState: templateStateStore,
+  });
+
   // ─── Tenant Auth Services ─────────────────────────────────────────────────
   // Instantiate tenant authentication services when platform is available.
   let tenantAuthService: TenantAuthService | undefined;
@@ -267,8 +235,8 @@ async function main() {
     handleLogSSE(req, res, logBuffer);
   });
 
-  health.registerStreamHandler((tenantId, message) =>
-    tenantManager.chatStream(tenantId, message),
+  health.registerStreamHandler((tenantId, message, signal) =>
+    tenantManager.chatStream(tenantId, message, signal),
   );
 
   log.info("BioCore multi-tenant listo");

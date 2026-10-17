@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Crear la capa neutral de providers LLM, normalización/validación, resolución canónica de keys y adapters Anthropic/Gemini/NVIDIA con SDK/axios mockeables.",
+  "status": "completed",
+  "steps": [
+    "Crear config/llmTypes.ts, config/llmConfig.ts, los contratos neutrales de métricas/límites y los errores ProviderError/CircuitOpenError.",
+    "Crear system/providers/ILLMProvider.ts, providerTypes.ts, providerSchemas.ts, providerFactory.ts e index.ts con normalizeLLMRequest y validación de transcript.",
+    "Tipar atoms/schema.ts y atoms/toolFormat.ts sobre JSONSchemaObject/LLMTool, preservando campos admitidos y produciendo ValidationError para schemas no representables.",
+    "Implementar AnthropicProvider, GeminiProvider y NvidiaProvider con proyección protocolaria, parseo Zod, usage, errores, AbortSignal y streaming de una sola llamada.",
+    "Añadir pruebas mockeadas de contrato, schemas, resolver de key, payloads Anthropic/Gemini/NVIDIA, múltiples tool calls, SSE y errores sin red."
+  ],
+  "acceptance_criteria": [
+    "ILLMProvider y NormalizedLLMRequest obligan maxTokens normalizado y validan límites, orden, IDs y argumentos JSON objeto.",
+    "Los tres adapters no importan BaseOrchestrator/server ni ejecutan tools y producen exactamente un evento completed por stream válido.",
+    "Anthropic omite name en tool_result; Gemini define history/current Parts y correlación por índice; NVIDIA conserva tool_call_id y parsea SSE completo.",
+    "GOOGLE_API_KEY y GOOGLE_AI_API_KEY tienen resolución y clasificación consistente; ninguna prueba hace llamadas externas.",
+    "npx tsc --noEmit -p C:\\Users\\GermanDarioArbelaez\\Documents\\project-agent\\bio-template\\packages\\core\\tsconfig.json y las pruebas de providers pasan."
+  ],
+  "verification": [
+    "npx vitest --run --config C:\\Users\\GermanDarioArbelaez\\Documents\\project-agent\\bio-template\\packages\\core\\vitest.config.ts C:\\Users\\GermanDarioArbelaez\\Documents\\project-agent\\bio-template\\packages\\core\\tests\\system\\providers",
+    "npm --prefix C:\\Users\\GermanDarioArbelaez\\Documents\\project-agent\\bio-template run build:ts"
+  ],
+  "blocked_reason": null,
+  "findings": "Implementado FEAT-001 en bio-template: llmTypes/llmConfig con selección inicial y resolver canónico GOOGLE_API_KEY -> GOOGLE_AI_API_KEY; ProviderError/CircuitOpenError tipados; contratos JSON/transcript/usage/stream en system/providers; normalización Zod de requests y schemas; atoms schema/toolFormat tipados con rechazo visible de keywords no representables; adapters mockeables Anthropic SDK, Gemini SDK y NVIDIA axios/SSE con AbortSignal, tool calls, payloads y un único completed; factory e exports públicos; settings reexporta los tipos neutrales. Verificaciones: validate-template PASS (49 rutas); build:ts PASS; tsc core PASS; suite específica de providers PASS (5 tests, usando --dir packages/core porque el comando literal de FEAT-001 no descubre tests desde la raíz); test global ejecutado y bloqueado por estado preexistente del checkout: better-sqlite3 NODE_MODULE_VERSION 127 vs Node 115, fast-check ausente y una aserción de ApplicationComposition no relacionada. No hubo red, credenciales, dependencias nuevas ni cambios en bio-core. Para FEAT-002: UnifiedCortex debe consumir providerFactory/ILLMProvider, conservar config mutable compatible y clasificar ProviderError antes del breaker; los payloads ya omiten name en Anthropic tool_result, separan Gemini history/current y conservan NVIDIA tool_call_id. Para FEAT-003: usar resolveProviderApiKey también en health/settings y mantener GOOGLE_API_KEY como canónica con GOOGLE_AI_API_KEY como alias legado; no reconstruir transcript desde HistoryMolecule y no incluir dist/DB/.env en el commit."
+}

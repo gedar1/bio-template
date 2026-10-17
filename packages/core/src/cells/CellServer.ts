@@ -1,5 +1,9 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  McpServer,
+  type RegisteredTool,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -22,30 +26,39 @@ import { CommandSchema, FilePathSchema } from "../config/validators.js";
 import { createLogger } from "../config/logger.js";
 import { RateLimiter } from "../infrastructure/RateLimiter.js";
 import { MutationError, MoleculeError } from "../errors.js";
+import type { IDatabase } from "../molecules/interfaces/IDatabase.js";
+import type { IMolecule } from "../molecules/interfaces/IMolecule.js";
+import type { ICell } from "./interfaces/ICell.js";
+import type {
+  CellComposition,
+  CellRegistration,
+  CellRuntimeContext,
+  CellResource,
+} from "./CellComposition.js";
+import type { Registry } from "../config/mergeRegistry.js";
 
 const log = createLogger("CellServer");
-import type { IDatabase } from "../molecules/interfaces/IDatabase.js";
-import type { CellTypeDefinition } from "../atoms/index.js";
-import { resolveTools } from "../atoms/index.js";
 
 const require = createRequire(import.meta.url);
 const __dirname = getModuleDir(import.meta.url);
 
-// ─── Carga el Registry externo ────────────────────────────────────────────────
-const registry = require(join(__dirname, "../config/registry.json")) as {
-  cells: CellTypeDefinition[];
-};
+// ─── Registry genérico por defecto ───────────────────────────────────────────
+const registry = require(
+  join(__dirname, "../config/registry.json"),
+) as Registry;
 
-const validTypes = registry.cells.map((c) => c.type) as [string, ...string[]];
-const typeDescriptions = registry.cells
-  .map((c) => `'${c.type}': ${c.description}`)
-  .join(" | ");
+export interface CellServerOptions {
+  readonly allowedCells?: readonly string[];
+  readonly tenantId?: string;
+  readonly composition?: CellComposition;
+  readonly context?: Readonly<Record<string, unknown>>;
+}
 
 /**
  * Servidor MCP BioCore con moléculas completas.
  * Esta célula muta dinámicamente para exponer diferentes capacidades.
  */
-export class CellServer {
+export class CellServer implements ICell {
   readonly server: McpServer;
   public currentType: string = "undifferentiated";
 
@@ -72,6 +85,12 @@ export class CellServer {
     windowMs: 60000,
   });
 
+  /** Registry compuesto activo para este proceso de cell. */
+  private readonly composition: CellComposition;
+
+  /** Registrars built-in, reemplazables por una aplicación vertical. */
+  private readonly registrations: ReadonlyMap<string, CellRegistration>;
+
   /** Tipos de célula permitidos para este servidor (filtrado por perfil) */
   private readonly allowedCells: string[];
 
@@ -81,16 +100,43 @@ export class CellServer {
   /** Ruta de la BD específica del tenant */
   private readonly tenantDbPath: string;
 
-  constructor(allowedCells?: string[], tenantId?: string) {
-    // Si se pasan allowedCells, filtrar; si no, usar todos los del registry
-    this.allowedCells = allowedCells
-      ? allowedCells.filter((c) => validTypes.includes(c))
-      : [...validTypes];
+  /** Recursos vivos de la mutación actual. */
+  private readonly resources = new Map<string, IMolecule>();
 
-    // TenantId para aislar datos de negocio
-    this.tenantId = tenantId || process.env.BIOCORE_TENANT_ID || "default";
+  /** Recursos cuyo cleanup falló y deben reintentarse sin perder la referencia. */
+  private readonly pendingCleanup = new Map<IMolecule, () => Promise<void>>();
 
-    // Ruta de BD del tenant (data/tenants/{tenantId}.db)
+  /** Handles MCP de las tools activas, indexados por nombre. */
+  private readonly activeTools = new Map<string, RegisteredTool>();
+
+  /** Contexto adicional proporcionado por la aplicación. */
+  private readonly applicationContext: Readonly<Record<string, unknown>>;
+
+  constructor(options?: CellServerOptions);
+  constructor(allowedCells?: string[], tenantId?: string);
+  constructor(
+    optionsOrAllowedCells: CellServerOptions | string[] = {},
+    legacyTenantId?: string,
+  ) {
+    const options: CellServerOptions = Array.isArray(optionsOrAllowedCells)
+      ? { allowedCells: optionsOrAllowedCells, tenantId: legacyTenantId }
+      : optionsOrAllowedCells;
+
+    this.composition = options.composition ?? { registry };
+    this.registrations = this.createRegistrations(options.composition);
+    const validTypes = this.composition.registry.cells.map((cell) => cell.type);
+    this.allowedCells = options.allowedCells
+      ? options.allowedCells.filter((cell) => validTypes.includes(cell))
+      : options.composition?.allowedCells
+        ? options.composition.allowedCells.filter((cell) =>
+            validTypes.includes(cell),
+          )
+        : [...validTypes];
+
+    this.tenantId =
+      options.tenantId || process.env.BIOCORE_TENANT_ID || "default";
+    this.applicationContext = options.context ?? {};
+
     const dataDir = process.env.DATABASE_DIR || "./data";
     const safeName = this.tenantId.replace(/[^a-zA-Z0-9_-]/g, "_");
     const tenantsDir = `${dataDir}/tenants`;
@@ -111,10 +157,12 @@ export class CellServer {
    * Registra la herramienta base que toda Célula tiene al iniciar.
    */
   private setupBaseTools() {
-    // Filtrar tipos y descripciones según allowedCells
-    const filteredCells = registry.cells.filter(
+    // registry.tools es metadato; solo los tipos con registrar real se anuncian.
+    const filteredCells = this.composition.registry.cells.filter(
       (c) =>
-        this.allowedCells.includes(c.type) && c.type !== "undifferentiated",
+        this.allowedCells.includes(c.type) &&
+        c.type !== "undifferentiated" &&
+        this.registrations.has(c.type),
     );
     const filteredTypes = filteredCells.map((c) => c.type) as [
       string,
@@ -140,23 +188,13 @@ export class CellServer {
       },
       async ({ type }) => {
         await this.disposeMolecules();
-        this.currentType = type;
 
-        // Resolver herramientas incluyendo las heredadas del parent
-        const resolvedToolNames = resolveTools(type, registry.cells);
-        log.info(
-          { type, tools: resolvedToolNames },
-          "Herramientas resueltas (con herencia)",
-        );
-
-        await this.initializeMolecules(type);
-        this.registerToolsForType(type);
-
-        // Si tiene parent, también inicializar y registrar herramientas del parent
-        const cellDef = registry.cells.find((c) => c.type === type);
-        if (cellDef?.parent) {
-          await this.initializeMolecules(cellDef.parent);
-          this.registerToolsForType(cellDef.parent);
+        try {
+          await this.activateTypes(type);
+          this.currentType = type;
+        } catch (error: unknown) {
+          this.currentType = "undifferentiated";
+          throw error;
         }
 
         log.info({ type: this.currentType }, "Mutación exitosa");
@@ -173,134 +211,405 @@ export class CellServer {
   }
 
   /**
-   * Limpia las moléculas del perfil anterior antes de mutar.
-   * Cierra conexiones abiertas y libera referencias.
+   * Retira las tools de la mutación anterior antes de liberar sus recursos.
+   * La API MCP no expone unregister en McpServer, pero cada RegisteredTool
+   * ofrece remove(); el mapa evita dejar handlers obsoletos o duplicados.
    */
-  private async disposeMolecules(): Promise<void> {
-    try {
-      if (this.database) {
-        await this.database.close();
-        this.database = null;
+  private disposeTools(): void {
+    for (const [name, tool] of this.activeTools) {
+      try {
+        tool.remove();
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.warn({ error: message, name }, "Error retirando tool MCP");
       }
-      if (this.gmail) {
-        this.gmail = null;
-      }
-      this.http = null;
-      this.filesystem = null;
-      this.git = null;
-      this.scraper = null;
-      this.system = null;
-      this.whatsapp = null;
-      this.websocket?.dispose().catch(() => {});
-      this.websocket = null;
-
-      log.debug(
-        { previousType: this.currentType },
-        "Moléculas anteriores liberadas",
-      );
-    } catch (error: any) {
-      log.warn({ error: error.message }, "Error durante dispose de moléculas");
+    }
+    this.activeTools.clear();
+    if (this.server.isConnected()) {
+      this.server.sendToolListChanged();
     }
   }
 
+  private createCleanupAction(molecule: IMolecule): () => Promise<void> {
+    if (molecule === this.database && this.database) {
+      const database = this.database;
+      return async () => {
+        await database.close();
+      };
+    }
+    return async () => {
+      await molecule.dispose?.();
+    };
+  }
+
+  private clearMoleculeReferences(molecule: IMolecule): void {
+    if (this.database === molecule) this.database = null;
+    if (this.gmail === molecule) this.gmail = null;
+    if (this.http === molecule) this.http = null;
+    if (this.filesystem === molecule) this.filesystem = null;
+    if (this.git === molecule) this.git = null;
+    if (this.scraper === molecule) this.scraper = null;
+    if (this.system === molecule) this.system = null;
+    if (this.whatsapp === molecule) this.whatsapp = null;
+    if (this.websocket === molecule) this.websocket = null;
+  }
+
   /**
-   * Inicializa las moléculas según el tipo de célula
+   * Limpia las moléculas del perfil anterior o de una factory abortada.
+   * Un fallo conserva la referencia en pendingCleanup para que una llamada
+   * posterior reintente el mismo cleanup y nunca declare cerrado un recurso abierto.
    */
-  private async initializeMolecules(type: string): Promise<void> {
-    try {
-      switch (type) {
-        case "memory":
-          this.database = DatabaseMolecule.create();
-          await this.database.connect();
-          break;
+  private async disposeMolecules(
+    additionalResources: readonly CellResource[] = [],
+  ): Promise<void> {
+    this.disposeTools();
 
-        case "http":
-          this.http = new HTTPMolecule();
-          break;
-
-        case "filesystem":
-          this.filesystem = new FileSystemMolecule();
-          break;
-
-        case "communication":
-          this.gmail = new GmailMolecule();
-          await this.gmail.connect();
-          try {
-            this.whatsapp = new WhatsAppMolecule();
-          } catch {
-            // WhatsApp es opcional — si no hay config de Twilio, se ignora
-          }
-          break;
-
-        case "versioncontrol":
-          this.git = new GitMolecule();
-          break;
-
-        case "sensory":
-          this.scraper = new ScraperMolecule();
-          this.http = new HTTPMolecule();
-          break;
-
-        case "system":
-          this.system = new SystemMolecule();
-          break;
-
-        case "realtime":
-          this.websocket = new WebSocketMolecule();
-          await this.websocket.initialize();
-          this.http = new HTTPMolecule();
-          break;
+    const cleanupActions = new Map<IMolecule, () => Promise<void>>(
+      this.pendingCleanup,
+    );
+    const addResource = (key: string, molecule: IMolecule): void => {
+      if (!cleanupActions.has(molecule)) {
+        cleanupActions.set(molecule, this.createCleanupAction(molecule));
       }
-    } catch (error: any) {
-      log.error(
-        { error: error.message, type },
-        "Error inicializando moléculas",
+      if (!this.resources.has(key)) {
+        this.resources.set(key, molecule);
+      }
+    };
+
+    for (const [key, molecule] of this.resources) {
+      addResource(key, molecule);
+    }
+    for (const resource of additionalResources) {
+      addResource(resource.key, resource.molecule);
+    }
+    if (this.database) {
+      addResource("database", this.database);
+    }
+
+    const failures: string[] = [];
+    for (const [molecule, cleanup] of cleanupActions) {
+      try {
+        await cleanup();
+        this.pendingCleanup.delete(molecule);
+        for (const [key, current] of this.resources) {
+          if (current === molecule) this.resources.delete(key);
+        }
+        this.clearMoleculeReferences(molecule);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.pendingCleanup.set(molecule, cleanup);
+        failures.push(`${molecule.name}: ${message}`);
+        log.warn(
+          { error: message, molecule: molecule.name },
+          "Error durante dispose de molécula; queda pendiente de retry",
+        );
+      }
+    }
+
+    if (failures.length > 0) {
+      throw new MoleculeError(
+        "cell",
+        "No se pudieron liberar todos los recursos de la célula.",
+        { pendingCleanup: failures },
       );
+    }
+
+    log.debug(
+      { previousType: this.currentType },
+      "Moléculas anteriores liberadas",
+    );
+  }
+
+  private createRegistrations(
+    composition?: CellComposition,
+  ): ReadonlyMap<string, CellRegistration> {
+    const builtIns: CellRegistration[] = [
+      {
+        type: "memory",
+        factory: async (context) => {
+          const database = DatabaseMolecule.create();
+          this.database = database;
+          const resource = { key: "database", molecule: database };
+          context.trackResource(resource);
+          await database.connect();
+          return [resource];
+        },
+        registerTools: () => this.registerDatabaseTools(),
+      },
+      {
+        type: "http",
+        factory: (context) => {
+          const http = new HTTPMolecule();
+          this.http = http;
+          const resource = { key: "http", molecule: http };
+          context.trackResource(resource);
+          return [resource];
+        },
+        registerTools: () => this.registerHTTPTools(),
+      },
+      {
+        type: "filesystem",
+        factory: (context) => {
+          const filesystem = new FileSystemMolecule();
+          this.filesystem = filesystem;
+          const resource = { key: "filesystem", molecule: filesystem };
+          context.trackResource(resource);
+          return [resource];
+        },
+        registerTools: () => this.registerFileSystemTools(),
+      },
+      {
+        type: "communication",
+        factory: async (context) => {
+          const gmail = new GmailMolecule();
+          this.gmail = gmail;
+          const gmailResource = { key: "gmail", molecule: gmail };
+          context.trackResource(gmailResource);
+          await gmail.connect();
+          const resources: CellResource[] = [gmailResource];
+          try {
+            const whatsapp = new WhatsAppMolecule();
+            this.whatsapp = whatsapp;
+            const whatsappResource = { key: "whatsapp", molecule: whatsapp };
+            context.trackResource(whatsappResource);
+            resources.push(whatsappResource);
+          } catch {
+            // WhatsApp es opcional — si no hay configuración de Twilio, se omite.
+          }
+          return resources;
+        },
+        registerTools: async () => {
+          this.registerGmailTools();
+          this.registerWhatsAppTools();
+        },
+      },
+      {
+        type: "versioncontrol",
+        factory: (context) => {
+          const git = new GitMolecule();
+          this.git = git;
+          const resource = { key: "git", molecule: git };
+          context.trackResource(resource);
+          return [resource];
+        },
+        registerTools: () => this.registerGitTools(),
+      },
+      {
+        type: "sensory",
+        factory: (context) => {
+          const scraper = new ScraperMolecule();
+          const http = new HTTPMolecule();
+          this.scraper = scraper;
+          this.http = http;
+          const resources: CellResource[] = [
+            { key: "scraper", molecule: scraper },
+            { key: "http", molecule: http },
+          ];
+          for (const resource of resources) context.trackResource(resource);
+          return resources;
+        },
+        registerTools: () => this.registerScraperTools(),
+      },
+      {
+        type: "system",
+        factory: (context) => {
+          const system = new SystemMolecule();
+          this.system = system;
+          const resource = { key: "system", molecule: system };
+          context.trackResource(resource);
+          return [resource];
+        },
+        registerTools: () => this.registerSystemTools(),
+      },
+      {
+        type: "realtime",
+        factory: async (context) => {
+          const websocket = new WebSocketMolecule();
+          this.websocket = websocket;
+          const websocketResource = { key: "websocket", molecule: websocket };
+          context.trackResource(websocketResource);
+          await websocket.initialize();
+          const http = new HTTPMolecule();
+          this.http = http;
+          const httpResource = { key: "http", molecule: http };
+          context.trackResource(httpResource);
+          return [websocketResource, httpResource];
+        },
+        registerTools: () => this.registerWebSocketTools(),
+      },
+    ];
+
+    const registrations = new Map(
+      builtIns.map((registration) => [registration.type, registration]),
+    );
+    for (const registration of composition?.registrations ?? []) {
+      registrations.set(registration.type, registration);
+    }
+    return registrations;
+  }
+
+  private getRuntimeContext(
+    trackResource?: (resource: CellResource) => void,
+  ): CellRuntimeContext {
+    return {
+      tenantId: this.tenantId,
+      tenantDbPath: this.tenantDbPath,
+      values: this.applicationContext,
+      resources: this.resources,
+      getResource: <T extends IMolecule>(key: string): T | undefined =>
+        this.resources.get(key) as T | undefined,
+      trackResource: trackResource ?? (() => undefined),
+    };
+  }
+
+  private getToolRegistrationServer(): McpServer {
+    const server = this.server;
+    type ToolSchema =
+      | import("@modelcontextprotocol/sdk/server/zod-compat.js").ZodRawShapeCompat
+      | import("@modelcontextprotocol/sdk/server/zod-compat.js").AnySchema;
+    type ToolRegistrationArgs<
+      OutputArgs extends ToolSchema,
+      InputArgs extends undefined | ToolSchema = undefined,
+    > = [
+      name: string,
+      config: {
+        title?: string;
+        description?: string;
+        inputSchema?: InputArgs;
+        outputSchema?: OutputArgs;
+        annotations?: import("@modelcontextprotocol/sdk/types.js").ToolAnnotations;
+        _meta?: Record<string, unknown>;
+      },
+      callback: import("@modelcontextprotocol/sdk/server/mcp.js").ToolCallback<InputArgs>,
+    ];
+    const registerTool = <
+      OutputArgs extends ToolSchema,
+      InputArgs extends undefined | ToolSchema = undefined,
+    >(
+      ...args: ToolRegistrationArgs<OutputArgs, InputArgs>
+    ): RegisteredTool => server.registerTool(...args);
+
+    return new Proxy(server, {
+      get: (target, property, receiver) => {
+        if (property !== "registerTool") {
+          return Reflect.get(target, property, receiver);
+        }
+
+        return <
+          OutputArgs extends ToolSchema,
+          InputArgs extends undefined | ToolSchema = undefined,
+        >(
+          ...args: ToolRegistrationArgs<OutputArgs, InputArgs>
+        ): RegisteredTool => {
+          const [name] = args;
+          if (this.activeTools.has(name)) {
+            throw new MutationError(
+              `La tool '${name}' fue registrada más de una vez en la mutación.`,
+            );
+          }
+          const registered = registerTool(...args);
+          this.activeTools.set(name, registered);
+          return registered;
+        };
+      },
+    });
+  }
+
+  private async activateTypes(type: string): Promise<void> {
+    const createdResources: CellResource[] = [];
+    const trackFactoryResource = (resource: CellResource): void => {
+      if (
+        !createdResources.some(
+          (created) =>
+            created.key === resource.key &&
+            created.molecule === resource.molecule,
+        )
+      ) {
+        createdResources.push(resource);
+      }
+    };
+
+    try {
+      for (const activeType of this.getTypeChain(type)) {
+        const registration = this.registrations.get(activeType);
+        if (!registration) continue;
+
+        const created = await registration.factory(
+          this.getRuntimeContext(trackFactoryResource),
+        );
+        for (const resource of created) trackFactoryResource(resource);
+
+        const keys = new Set<string>();
+        for (const resource of created) {
+          if (keys.has(resource.key) || this.resources.has(resource.key)) {
+            throw new MutationError(
+              `El recurso '${resource.key}' fue registrado más de una vez.`,
+              { type: activeType },
+            );
+          }
+          keys.add(resource.key);
+        }
+
+        for (const resource of created) {
+          this.resources.set(resource.key, resource.molecule);
+          await resource.molecule.initialize?.();
+        }
+        await registration.registerTools(
+          this.getToolRegistrationServer(),
+          this.getRuntimeContext(),
+        );
+      }
+      if (this.server.isConnected()) {
+        this.server.sendToolListChanged();
+      }
+    } catch (error: unknown) {
+      try {
+        await this.disposeMolecules(createdResources);
+      } catch (cleanupError: unknown) {
+        const message =
+          cleanupError instanceof Error
+            ? cleanupError.message
+            : String(cleanupError);
+        log.error(
+          { error: message, type },
+          "Cleanup pendiente tras fallo de activación",
+        );
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      log.error({ error: message, type }, "Error activando cell");
+      if (error instanceof MutationError) throw error;
       throw new MoleculeError(
         type,
-        `Error inicializando moléculas para '${type}': ${error.message}`,
+        `Error activando moléculas para '${type}': ${message}`,
       );
     }
   }
 
-  /**
-   * Registra las herramientas correspondientes al tipo de célula
-   */
-  private registerToolsForType(type: string): void {
-    switch (type) {
-      case "memory":
-        this.registerDatabaseTools();
-        break;
-      case "http":
-        this.registerHTTPTools();
-        break;
-      case "filesystem":
-        this.registerFileSystemTools();
-        break;
-      case "communication":
-        this.registerGmailTools();
-        this.registerWhatsAppTools();
-        break;
-      case "versioncontrol":
-        this.registerGitTools();
-        break;
-      case "sensory":
-        this.registerScraperTools();
-        break;
-      case "system":
-        this.registerSystemTools();
-        break;
-      case "realtime":
-        this.registerWebSocketTools();
-        break;
+  private getTypeChain(type: string): string[] {
+    const chain: string[] = [];
+    const visited = new Set<string>();
+    let currentType: string | undefined = type;
+
+    while (currentType) {
+      if (visited.has(currentType)) {
+        throw new MutationError(
+          `Ciclo de herencia detectado en '${currentType}'.`,
+        );
+      }
+      visited.add(currentType);
+      chain.unshift(currentType);
+      currentType = this.composition.registry.cells.find(
+        (cell) => cell.type === currentType,
+      )?.parent;
     }
+    return chain;
   }
 
   // ========== DATABASE TOOLS ==========
   private registerDatabaseTools(): void {
     if (!this.database) return;
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "db_query",
       {
         description: "Ejecuta una query SQL personalizada",
@@ -314,7 +623,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "db_insert",
       {
         description: "Inserta un registro en una tabla",
@@ -328,7 +637,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "db_find",
       {
         description: "Busca registros en una tabla",
@@ -350,7 +659,7 @@ export class CellServer {
   private registerHTTPTools(): void {
     if (!this.http) return;
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "http_get",
       {
         description: "Realiza una petición HTTP GET",
@@ -364,7 +673,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "http_post",
       {
         description: "Realiza una petición HTTP POST",
@@ -383,7 +692,7 @@ export class CellServer {
   private registerFileSystemTools(): void {
     if (!this.filesystem) return;
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "read_file",
       {
         description: "Lee el contenido de un archivo",
@@ -396,7 +705,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "write_file",
       {
         description: "Escribe contenido en un archivo",
@@ -411,7 +720,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "list_files",
       {
         description: "Lista archivos en un directorio",
@@ -430,7 +739,7 @@ export class CellServer {
   private registerGmailTools(): void {
     if (!this.gmail) return;
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "send_email",
       {
         description: "Envía un email via Gmail",
@@ -453,7 +762,7 @@ export class CellServer {
   private registerWhatsAppTools(): void {
     if (!this.whatsapp) return;
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "send_whatsapp",
       {
         description: "Envía un mensaje de WhatsApp a un número de teléfono",
@@ -482,7 +791,7 @@ export class CellServer {
   private registerGitTools(): void {
     if (!this.git) return;
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "git_status",
       {
         description: "Obtiene el status del repositorio Git",
@@ -496,7 +805,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "git_commit",
       {
         description: "Hace commit de los cambios",
@@ -514,7 +823,7 @@ export class CellServer {
   private registerScraperTools(): void {
     if (!this.scraper) return;
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "scrape_url",
       {
         description:
@@ -532,7 +841,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "extract_links",
       {
         description: "Extrae todos los links de una página",
@@ -546,7 +855,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "scrape_metadata",
       {
         description:
@@ -566,7 +875,7 @@ export class CellServer {
   private registerSystemTools(): void {
     if (!this.system) return;
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "execute_cli",
       {
         description:
@@ -581,7 +890,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "check_command",
       {
         description: "Verifica si un comando CLI está instalado",
@@ -600,7 +909,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "system_info",
       {
         description: "Obtiene información del sistema",
@@ -619,7 +928,7 @@ export class CellServer {
   private registerWebSocketTools(): void {
     if (!this.websocket) return;
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "ws_start_server",
       {
         description:
@@ -645,7 +954,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "ws_stop_server",
       {
         description:
@@ -662,7 +971,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "ws_send",
       {
         description:
@@ -680,7 +989,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "ws_broadcast",
       {
         description:
@@ -697,7 +1006,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "ws_list_clients",
       {
         description:
@@ -729,7 +1038,7 @@ export class CellServer {
       },
     );
 
-    this.server.registerTool(
+    this.getToolRegistrationServer().registerTool(
       "ws_disconnect_client",
       {
         description: "Desconecta un cliente WebSocket específico por su ID",
@@ -751,36 +1060,45 @@ export class CellServer {
     );
   }
 
+  /** Libera los recursos de la mutación actual. */
+  async dispose(): Promise<void> {
+    await this.disposeMolecules();
+  }
+
   /**
    * Arranca la célula usando el transporte indicado.
    */
-  async run(transport?: unknown) {
+  async run(transport?: Transport): Promise<void> {
     const activeTransport = transport ?? new StdioServerTransport();
     const transportName = transport ? "transporte personalizado" : "Stdio";
     log.info(
       { transport: transportName },
       "Célula activa, esperando estímulos",
     );
-    await this.server.connect(
-      activeTransport as import("@modelcontextprotocol/sdk/shared/transport.js").Transport,
-    );
+    await this.server.connect(activeTransport);
   }
+}
+
+/**
+ * Punto de entrada para un proceso MCP de una aplicación.
+ * La composición se importa dentro del proceso y nunca se serializa por MCP.
+ */
+export async function runCellServer(
+  composition?: CellComposition,
+): Promise<void> {
+  const allowedCellsEnv = process.env.BIOCORE_ALLOWED_CELLS;
+  const allowedCells = allowedCellsEnv
+    ? allowedCellsEnv.split(",").map((cell) => cell.trim())
+    : undefined;
+  const tenantId = process.env.BIOCORE_TENANT_ID || "default";
+  const server = new CellServer({ allowedCells, tenantId, composition });
+  await server.run();
 }
 
 // Inicialización de la Célula si es invocada directamente.
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  // Leer allowedCells desde variable de entorno (pasada por el organismo)
-  const allowedCellsEnv = process.env.BIOCORE_ALLOWED_CELLS;
-  const allowedCells = allowedCellsEnv
-    ? allowedCellsEnv.split(",").map((c) => c.trim())
-    : undefined;
-
-  // Leer tenantId desde variable de entorno (pasada por el organismo)
-  const tenantId = process.env.BIOCORE_TENANT_ID || "default";
-
-  const server = new CellServer(allowedCells, tenantId);
   try {
-    await server.run();
+    await runCellServer();
   } catch (error) {
     console.error(error);
     process.exit(1);

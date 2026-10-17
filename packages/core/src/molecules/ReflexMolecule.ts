@@ -20,16 +20,46 @@ const log = createLogger("ReflexMolecule");
 
 // ─── Dynamic import for hnswlib-node (may not be available) ───────────────────
 
-let HierarchicalNSW: any = null;
+interface HnswIndex {
+  initIndex(
+    maxElements: number,
+    m: number,
+    efConstruction: number,
+    randomSeed: number,
+  ): void;
+  addPoint(embedding: Embedding, label: number): void;
+  getMaxElements(): number;
+  resizeIndex(maxElements: number): void;
+  searchKnn(
+    embedding: Embedding,
+    k: number,
+  ): { neighbors: number[]; distances: number[] };
+}
+
+type HnswConstructor = new (space: "cosine", dimension: number) => HnswIndex;
+
+type HnswModule = {
+  HierarchicalNSW?: HnswConstructor;
+  default?: { HierarchicalNSW?: HnswConstructor };
+};
+
+let HierarchicalNSW: HnswConstructor | null = null;
 
 async function loadHnswlib(): Promise<void> {
   try {
-    // @ts-ignore — hnswlib-node is optional; native binary may not be available on all platforms
-    const mod = await import("hnswlib-node");
+    // @ts-ignore — hnswlib-node is an optional peer without required type declarations
+    const mod = (await import("hnswlib-node")) as unknown as HnswModule;
     HierarchicalNSW =
-      mod.HierarchicalNSW ?? (mod as any).default?.HierarchicalNSW;
-  } catch {
-    // hnswlib-node not available — will use linear scan fallback
+      mod.HierarchicalNSW ?? mod.default?.HierarchicalNSW ?? null;
+    if (!HierarchicalNSW) {
+      log.info("hnswlib-node unavailable; using linear scan fallback");
+    }
+  } catch (error: unknown) {
+    HierarchicalNSW = null;
+    log.info(
+      { error: error instanceof Error ? error.message : String(error) },
+      "hnswlib-node unavailable; using linear scan fallback",
+    );
   }
 }
 
@@ -96,8 +126,9 @@ export interface ReflexMatch {
  *   - NONE   (sim < 0.80):              LLM resuelve solo y aprende
  *
  * Los embeddings se almacenan serializados en SQLite (JSON).
- * Vector index (hnswlib-node) provides O(log n) search when available.
- * Costo: $0 (100% local, sin API externa).
+ * Vector index (`hnswlib-node`, optional peer) provides O(log n) search when available.
+ * Linear scan remains available with O(n) cost when the native index is absent.
+ * `better-sqlite3` is a separate required native dependency for persistence.
  */
 export class ReflexMolecule implements IMolecule {
   readonly name = "reflex";
@@ -124,7 +155,8 @@ export class ReflexMolecule implements IMolecule {
 
   // ─── Vector index fields ──────────────────────────────────────────────────
 
-  private vectorIndex: any | null = null;
+  private vectorIndex: HnswIndex | null = null;
+  private vectorIndexMode: "hnsw" | "linear" = "linear";
   private labelToId: Map<number, number> = new Map();
   private idToLabel: Map<number, number> = new Map();
   private nextLabel: number = 0;
@@ -143,6 +175,14 @@ export class ReflexMolecule implements IMolecule {
   /** Sets the PerfMonitor instance for recording reflex metrics */
   setPerfMonitor(perf: PerfMonitor): void {
     this.perf = perf;
+  }
+
+  /** Reports whether reflex search uses HNSW or the linear fallback. */
+  getVectorIndexMode(): "hnsw" | "linear" {
+    if (this.vectorIndexMode === "hnsw" && !this.hasUsableVectorIndex()) {
+      this.invalidateVectorIndex("mapping", "HNSW label maps are inconsistent");
+    }
+    return this.vectorIndexMode;
   }
 
   async initialize(): Promise<void> {
@@ -168,6 +208,7 @@ export class ReflexMolecule implements IMolecule {
 
   async dispose(): Promise<void> {
     this.vectorIndex = null;
+    this.vectorIndexMode = "linear";
     this.labelToId.clear();
     this.idToLabel.clear();
     this.nextLabel = 0;
@@ -204,17 +245,65 @@ export class ReflexMolecule implements IMolecule {
 
   // ─── Vector Index Methods ─────────────────────────────────────────────────
 
-  private rebuildIndex(): void {
-    if (!HierarchicalNSW) {
-      log.debug("hnswlib-node not available, using linear scan fallback");
-      return;
+  private invalidateVectorIndex(
+    operation: "addPoint" | "resizeIndex" | "rebuild" | "searchKnn" | "mapping",
+    error: unknown,
+    id?: number,
+  ): void {
+    this.vectorIndex = null;
+    this.vectorIndexMode = "linear";
+    this.labelToId.clear();
+    this.idToLabel.clear();
+    this.nextLabel = 0;
+
+    log.warn(
+      {
+        operation,
+        ...(id === undefined ? {} : { id }),
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "HNSW vector index invalidated; using linear scan fallback",
+    );
+  }
+
+  private hasUsableVectorIndex(): boolean {
+    if (
+      !this.vectorIndex ||
+      this.labelToId.size === 0 ||
+      this.idToLabel.size !== this.labelToId.size ||
+      this.nextLabel !== this.labelToId.size
+    ) {
+      return false;
     }
+
+    for (const [label, id] of this.labelToId) {
+      if (this.idToLabel.get(id) !== label) return false;
+    }
+    for (const [id, label] of this.idToLabel) {
+      if (this.labelToId.get(label) !== id) return false;
+    }
+    return true;
+  }
+
+  private rebuildIndex(): void {
+    // Linear is the safe state until an index is fully initialized and usable.
+    this.vectorIndex = null;
+    this.vectorIndexMode = "linear";
+    this.labelToId.clear();
+    this.idToLabel.clear();
+    this.nextLabel = 0;
 
     const rows = this.db
       .prepare("SELECT id, embedding FROM reflexes")
       .all() as Array<{ id: number; embedding: string }>;
 
-    if (rows.length === 0) return;
+    if (!HierarchicalNSW || rows.length === 0) {
+      log.info(
+        { vectorIndex: this.vectorIndexMode },
+        "Using linear scan fallback for reflex search",
+      );
+      return;
+    }
 
     try {
       const maxElements = Math.max(rows.length * 2, 1000);
@@ -229,23 +318,49 @@ export class ReflexMolecule implements IMolecule {
         this.nextLabel++;
       }
 
+      if (!this.hasUsableVectorIndex() || this.labelToId.size !== rows.length) {
+        this.invalidateVectorIndex(
+          "mapping",
+          "HNSW label maps are inconsistent",
+        );
+        return;
+      }
+
+      this.vectorIndexMode = "hnsw";
       log.info({ count: rows.length }, "Vector index rebuilt");
-    } catch (err: any) {
-      log.warn(
-        { error: err.message },
-        "Failed to rebuild vector index, using linear scan fallback",
-      );
-      this.vectorIndex = null;
+    } catch (error: unknown) {
+      this.invalidateVectorIndex("rebuild", error);
     }
   }
 
   private insertIntoIndex(id: number, embedding: Embedding): void {
-    if (!this.vectorIndex) return;
+    if (!this.vectorIndex) {
+      if (HierarchicalNSW) {
+        this.rebuildIndex();
+      }
+      return;
+    }
+    if (!this.hasUsableVectorIndex()) {
+      this.invalidateVectorIndex(
+        "mapping",
+        "HNSW label maps are inconsistent",
+        id,
+      );
+      return;
+    }
 
+    let operation: "addPoint" | "resizeIndex" = "addPoint";
     try {
       // Resize if needed
-      if (this.nextLabel >= this.vectorIndex.getMaxElements()) {
-        this.vectorIndex.resizeIndex(this.vectorIndex.getMaxElements() * 2);
+      const currentMaxElements = this.vectorIndex.getMaxElements();
+      if (this.nextLabel >= currentMaxElements) {
+        operation = "resizeIndex";
+        const nextMaxElements = Math.max(
+          this.nextLabel + 1,
+          Math.max(currentMaxElements, 1) * 2,
+        );
+        this.vectorIndex.resizeIndex(nextMaxElements);
+        operation = "addPoint";
       }
 
       // If this id already has a label, we skip re-adding (HNSW doesn't support update)
@@ -255,11 +370,8 @@ export class ReflexMolecule implements IMolecule {
       this.labelToId.set(this.nextLabel, id);
       this.idToLabel.set(id, this.nextLabel);
       this.nextLabel++;
-    } catch (err: any) {
-      log.warn(
-        { error: err.message, id },
-        "Failed to insert into vector index",
-      );
+    } catch (error: unknown) {
+      this.invalidateVectorIndex(operation, error, id);
     }
   }
 
@@ -330,6 +442,7 @@ export class ReflexMolecule implements IMolecule {
     schemaVersions?: Record<string, string>,
   ): number {
     const sequence = normalizeSequence(steps.map((s) => s.action));
+    const serializedEmbedding = serializeEmbedding(embedding);
     const argTemplatesJson = argTemplates
       ? serializeArgTemplates(argTemplates)
       : null;
@@ -339,20 +452,25 @@ export class ReflexMolecule implements IMolecule {
 
     // Verificar si ya existe una secuencia idéntica
     const existing = this.db
-      .prepare("SELECT id, success_count FROM reflexes WHERE sequence = ?")
-      .get(sequence) as { id: number; success_count: number } | undefined;
+      .prepare(
+        "SELECT id, success_count, embedding FROM reflexes WHERE sequence = ?",
+      )
+      .get(sequence) as
+      | { id: number; success_count: number; embedding: string }
+      | undefined;
 
     if (existing) {
       this.db
         .prepare(
           `UPDATE reflexes 
-           SET success_count = success_count + 1, last_used = ?,
+           SET embedding = ?, success_count = success_count + 1, last_used = ?,
                arg_templates_json = COALESCE(?, arg_templates_json),
                schema_versions = COALESCE(?, schema_versions),
                steps_json = ?
            WHERE id = ?`,
         )
         .run(
+          serializedEmbedding,
           Date.now(),
           argTemplatesJson,
           schemaVersionsJson,
@@ -360,8 +478,10 @@ export class ReflexMolecule implements IMolecule {
           existing.id,
         );
 
-      // Update vector index if embedding changed
-      this.insertIntoIndex(existing.id, embedding);
+      // HNSW does not support updates; rebuild from SQLite when its embedding changes.
+      if (existing.embedding !== serializedEmbedding && this.vectorIndex) {
+        this.rebuildIndex();
+      }
 
       log.debug({ sequence, id: existing.id }, "Reflex existente actualizado");
       return existing.id;
@@ -377,7 +497,7 @@ export class ReflexMolecule implements IMolecule {
         taskSummary.substring(0, 200),
         sequence,
         JSON.stringify(steps),
-        serializeEmbedding(embedding),
+        serializedEmbedding,
         Date.now(),
         Date.now(),
         argTemplatesJson,
@@ -389,6 +509,47 @@ export class ReflexMolecule implements IMolecule {
 
     log.info({ sequence, id: newId }, "Nuevo reflex guardado");
     return newId;
+  }
+
+  private findLinearCandidates(
+    embedding: Embedding,
+  ): Array<{ id: number; similarity: number }> {
+    const rows = this.db
+      .prepare(
+        "SELECT id, embedding FROM reflexes ORDER BY success_count DESC, last_used DESC",
+      )
+      .all() as Array<{ id: number; embedding: string }>;
+
+    return rows.flatMap((row) => {
+      try {
+        const candidateEmbedding = deserializeEmbedding(row.embedding);
+        if (
+          !Array.isArray(candidateEmbedding) ||
+          candidateEmbedding.length !== 384 ||
+          candidateEmbedding.some((value) => !Number.isFinite(value))
+        ) {
+          throw new TypeError(
+            "embedding must be a finite 384-dimensional array",
+          );
+        }
+
+        return [
+          {
+            id: row.id,
+            similarity: cosineSimilarity(embedding, candidateEmbedding),
+          },
+        ];
+      } catch (error: unknown) {
+        log.warn(
+          {
+            id: row.id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Skipping invalid reflex embedding during linear scan",
+        );
+        return [];
+      }
+    });
   }
 
   /**
@@ -404,34 +565,44 @@ export class ReflexMolecule implements IMolecule {
     const now = Date.now();
     let candidates: Array<{ id: number; similarity: number }>;
 
-    if (this.vectorIndex && this.labelToId.size > 0) {
-      // Use HNSW index for fast search
+    if (this.vectorIndex && !this.hasUsableVectorIndex()) {
+      this.invalidateVectorIndex("mapping", "HNSW label maps are inconsistent");
+    }
+
+    if (this.hasUsableVectorIndex()) {
       const k = Math.min(topK * 2, this.labelToId.size);
-      const result = this.vectorIndex.searchKnn(embedding, k);
-      candidates = result.neighbors.map((label: number, i: number) => ({
-        id: this.labelToId.get(label)!,
-        similarity: 1 - result.distances[i], // cosine distance → similarity
-      }));
-    } else {
-      // Fallback: linear scan
-      const rows = this.db
-        .prepare(
-          `SELECT id, embedding FROM reflexes ORDER BY success_count DESC, last_used DESC LIMIT 50`,
-        )
-        .all() as Array<{ id: number; embedding: string }>;
+      try {
+        const result = this.vectorIndex!.searchKnn(embedding, k);
+        const hasInvalidLabels =
+          result.neighbors.length !== result.distances.length ||
+          result.neighbors.some(
+            (label: number) =>
+              !Number.isInteger(label) || !this.labelToId.has(label),
+          ) ||
+          result.distances.some(
+            (distance: number) => !Number.isFinite(distance),
+          );
 
-      if (rows.length === 0) {
-        this.perf?.recordReflexQuery("miss");
-        return null;
+        if (hasInvalidLabels) {
+          this.invalidateVectorIndex(
+            "searchKnn",
+            "HNSW search returned inconsistent labels",
+          );
+          candidates = this.findLinearCandidates(embedding);
+        } else {
+          this.vectorIndexMode = "hnsw";
+          candidates = result.neighbors.map((label: number, i: number) => ({
+            id: this.labelToId.get(label) as number,
+            similarity: 1 - result.distances[i], // cosine distance → similarity
+          }));
+        }
+      } catch (error: unknown) {
+        this.invalidateVectorIndex("searchKnn", error);
+        candidates = this.findLinearCandidates(embedding);
       }
-
-      candidates = rows.map((row) => ({
-        id: row.id,
-        similarity: cosineSimilarity(
-          embedding,
-          deserializeEmbedding(row.embedding),
-        ),
-      }));
+    } else {
+      this.vectorIndexMode = "linear";
+      candidates = this.findLinearCandidates(embedding);
     }
 
     if (candidates.length === 0) {
@@ -599,6 +770,9 @@ export class ReflexMolecule implements IMolecule {
   /** Elimina un reflex por ID (para limpieza manual) */
   remove(id: number): boolean {
     const result = this.db.prepare("DELETE FROM reflexes WHERE id = ?").run(id);
+    if (result.changes > 0 && this.vectorIndex) {
+      this.rebuildIndex();
+    }
     return result.changes > 0;
   }
 }

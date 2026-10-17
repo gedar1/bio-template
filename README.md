@@ -9,7 +9,9 @@ bio-template/
 ├── packages/core/          ← motor sincronizado + extensión de ejemplo
 │   └── src/
 │       ├── molecules/ExampleMolecule.ts
-│       └── config/domain-*.{json,ts,md}
+│       ├── config/domain-*.{json,ts,md}
+│       ├── config/applicationComposition.ts
+│       └── application-cell.ts
 ├── scripts/                ← utilidades sincronizadas desde bio-core
 ├── .kiro/steering/         ← steering canónico compartido
 ├── .kiro/hooks/            ← hooks oficiales compartidos
@@ -34,7 +36,15 @@ npm run validate-template
 npm run build:ts
 ```
 
-Lee **`docs/START_HERE.md`** para adaptar la molécula, el registry, el perfil y el agente de dominio. Los procedimientos detallados por capa están en `.kiro/steering/`; por ejemplo, invoca `biocore-create-molecule.md` para una molécula nueva.
+`hnswlib-node` es una peer dependency opcional. `npm install` no la intenta compilar: si no está presente, `ReflexMolecule` registra el modo `linear` y conserva la búsqueda por similitud, siempre que `better-sqlite3` tenga un binario compatible disponible. En un entorno con toolchain C++ compatible se puede instalar manualmente con `npm install hnswlib-node` para habilitar el índice HNSW y sus consultas O(log n). El rendimiento mejora con muchos reflexes, pero el resultado funcional y la persistencia siguen siendo los mismos.
+
+`better-sqlite3` no es opcional en este cambio: es una dependencia nativa separada y obligatoria para SQLite, con sus propios requisitos de prebuild o compilación.
+
+## Registrar una cell de dominio
+
+Una aplicación vertical registra sus capacidades en `packages/core/src/config/applicationComposition.ts`: combina `registry.json` con `domain-registry.json`, crea la molécula en un `factory` y registra sus tools en `registerTools`. `CellServer` recibe esa composición dentro del proceso MCP; no se serializan funciones por transporte.
+
+Para que `BaseOrganisms` lance la composición de la aplicación, usa el entrypoint compilado y define `BIOCORE_CELL_SERVER_PATH` con la ruta absoluta a `packages/core/dist/application-cell.js`. Ese entrypoint importa `createApplicationComposition()` y llama a `runCellServer()`. Así una aplicación vertical añade una cell sin modificar ni editar switches de `@bio/core`.
 
 ## Mantener el template actualizado
 

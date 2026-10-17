@@ -9,7 +9,7 @@ npm install
 npm run validate-template
 ```
 
-El validador comprueba solo archivos estructurales, JSON y configuración mínima. No requiere `.env`, credenciales, bases SQLite, `data/`, `dist/` ni datos de negocio. No leas ni agregues esos archivos al contrato.
+El validador comprueba solo archivos estructurales, JSON y configuración mínima. También exige el composition root y el entrypoint MCP del template. No requiere `.env`, credenciales, bases SQLite, `data/`, `dist/` ni datos de negocio.
 
 ## 2. Conoce el layout
 
@@ -26,7 +26,8 @@ packages/core/src/
 ├── molecules/
 │   └── ExampleMolecule.ts    ← punto de partida del dominio (editar o renombrar)
 ├── organisms/, server/, system/ ← motor (no modificar sin necesidad)
-└── domain-seed.ts            ← semillas del dominio, si el checkout las usa
+├── domain-seed.ts            ← semillas del dominio, si el checkout las usa
+├── application-cell.ts       ← entrypoint MCP que importa la composición
 ```
 
 No crees `packages/domain` solo porque aparezca en documentación antigua: este template real usa `packages/core/src`.
@@ -43,11 +44,15 @@ Edita `config/domain-registry.json` para declarar el tipo de célula y sus tools
 
 No sustituyas `config/registry.json` del motor durante la personalización. Si una integración requiere tocar `CellServer`, sigue `biocore-create-cell.md` y mantén allí solo orquestación MCP.
 
-## 5. Escribe el agente de dominio
+## 5. Registra la cell sin modificar el core
+
+`config/applicationComposition.ts` es el composition root de ejemplo. Combina los registries, crea `ExampleMolecule` con el `tenantDbPath` del contexto y registra las tools MCP con Zod. Para agregar una capacidad vertical, añade una entrada a `domain-registry.json` y un `CellRegistration` con `factory` y `registerTools`; no edites un `switch` de `CellServer`.
+
+El proceso hijo MCP no recibe funciones serializadas. `application-cell.ts` importa la composición dentro del proceso y llama a `runCellServer()`. Configura `BIOCORE_CELL_SERVER_PATH` con la ruta absoluta al `packages/core/dist/application-cell.js` cuando un organismo deba iniciar la cell de la aplicación.
+
+## 6. Escribe el agente de dominio
 
 El archivo indicado por `agentFile` debe explicar el rol, vocabulario, flujos y reglas destructivas de tu caso de uso. No pongas secretos ni datos reales en steering, prompts, fixtures o documentación.
-
-## 6. Añade seeds y capacidades opcionales
 
 Si el layout incluye un seed de dominio, define frases cortas y flujos de una sola intención. Activa únicamente las células necesarias (`memory`, `http`, `communication`, `filesystem`, etc.). Las moléculas genéricas del motor siguen siendo reutilizables y no deben copiar lógica entre sí.
 
@@ -80,7 +85,7 @@ El script resuelve `BIO_TEMPLATE_PATH` o `../bio-template`. Copia archivos norma
 □ Personalicé ExampleMolecule.ts o creé una molécula con IMolecule
 □ Actualicé domain-registry.json y domain-profile.ts
 □ El agentFile existe y no contiene secretos
-□ Registré las tools en CellServer solo si son necesarias
+□ Registré las tools en applicationComposition.ts y no en un switch de CellServer
 □ Añadí tests sin APIs externas, .env, BDs ni datos reales
 □ npm test y npm run build:ts pasan
 □ La sincronización se ejecuta desde bio-core y conserva template-*

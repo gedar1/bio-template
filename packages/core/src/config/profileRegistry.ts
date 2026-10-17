@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { BioCoreError } from "../errors.js";
+import { DOMAIN_PROFILE_ID, domainProfile } from "./domain-profile.js";
 
 const ProfileIdSchema = z
   .string()
@@ -23,8 +24,8 @@ interface ProfileStore {
 }
 
 const store: ProfileStore = {
-  profiles: new Map(),
-  defaultProfile: "dev",
+  profiles: new Map([[DOMAIN_PROFILE_ID, domainProfile]]),
+  defaultProfile: DOMAIN_PROFILE_ID,
 };
 
 /**

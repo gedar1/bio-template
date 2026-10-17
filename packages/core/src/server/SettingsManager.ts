@@ -2,17 +2,19 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getModuleDir } from "../atoms/paths.js";
 import { createLogger } from "../config/logger.js";
+import { resolveProviderApiKey } from "../config/llmConfig.js";
 import {
   SettingsPatchSchema,
   RESTART_REQUIRED_KEYS,
 } from "./validators/settingsValidators.js";
 import type { UnifiedCortex } from "../system/implementations/UnifiedCortex.js";
-import type { TenantManager } from "./TenantManager.js";
+import type { CircuitBreakerSnapshot, TenantManager } from "./TenantManager.js";
 import type { TemplateStateStore } from "./TemplateStateStore.js";
 import type {
   SystemSettings,
   SettingsPatch,
   LLMProviderName,
+  LLMProviderConfig,
   ApiKeyStatus,
   CircuitBreakerInfo,
   TemplateState,
@@ -29,14 +31,6 @@ export interface SettingsManagerDeps {
   tenantManager: TenantManager;
   templateState: TemplateStateStore;
 }
-
-// ─── Environment variable mapping per provider ──────────────────────────────
-
-const API_KEY_ENV_MAP: Record<LLMProviderName, string> = {
-  gemini: "GOOGLE_AI_API_KEY",
-  claude: "ANTHROPIC_API_KEY",
-  nvidia: "NVIDIA_API_KEY",
-};
 
 // ─── SettingsManager ────────────────────────────────────────────────────────
 
@@ -66,7 +60,7 @@ export class SettingsManager {
    * CircuitBreakers y variables de entorno.
    */
   getSettings(): SystemSettings {
-    const providerConfig = this.cortex.getProviderConfig();
+    const providerConfig = this.tenantManager.getProviderConfig();
     const tenantProfile = this.getTenantProfileInfo();
     const businessConfig = this.getBusinessConfig();
     const apiKeyStatuses = this.getApiKeyStatuses();
@@ -155,19 +149,18 @@ export class SettingsManager {
   // ─── Private: Health Check ──────────────────────────────────────────────────
 
   /**
-   * Health check de un provider antes de activarlo.
-   * Verifica que la API key exista y tenga formato válido.
+   * Health check local de un provider antes de activarlo.
+   * Solo inspecciona la key resuelta; nunca hace una llamada externa.
    */
   private async healthCheckProvider(
     provider: LLMProviderName,
   ): Promise<boolean> {
-    const envVar = API_KEY_ENV_MAP[provider];
-    const apiKey = process.env[envVar];
+    const apiKey = resolveProviderApiKey(provider);
 
     // If key is missing or invalid format, provider is unreachable
     if (!apiKey || apiKey.length < 10) {
       log.warn(
-        { provider, envVar },
+        { provider },
         "Health check failed — API key missing or invalid",
       );
       return false;
@@ -201,35 +194,25 @@ export class SettingsManager {
   private async applyLLMChanges(
     llmPatch: NonNullable<SettingsPatch["llm"]>,
   ): Promise<void> {
-    const previousConfig = this.cortex.getProviderConfig();
+    const previousConfig = this.tenantManager.getProviderConfig();
+    const nextConfig: LLMProviderConfig = {
+      primaryProvider:
+        llmPatch.primaryProvider ?? previousConfig.primaryProvider,
+      fallbackOrder: [
+        ...(llmPatch.fallbackOrder ?? previousConfig.fallbackOrder),
+      ],
+    };
 
-    // If primaryProvider is changing, run health check first
-    if (
-      llmPatch.primaryProvider &&
-      llmPatch.primaryProvider !== previousConfig.primaryProvider
-    ) {
-      const healthy = await this.healthCheckProvider(llmPatch.primaryProvider);
-      if (!healthy) {
-        // Revert: don't apply any LLM changes
-        const error = new Error(
-          `Provider '${llmPatch.primaryProvider}' is unreachable — reverting to previous configuration`,
-        );
-        (error as any).provider = llmPatch.primaryProvider;
-        (error as any).reverted = true;
-        throw error;
-      }
-    }
-
-    // Apply reconfiguration
-    this.cortex.reconfigure({
-      primaryProvider: llmPatch.primaryProvider,
-      fallbackOrder: llmPatch.fallbackOrder,
-    });
+    // TenantManager is the authority for traffic. Keep the configured chain
+    // intact even when a key is missing: the provider reports missing_key and
+    // UnifiedCortex can apply its approved fallback policy.
+    this.tenantManager.reconfigureAll(nextConfig);
+    this.cortex.reconfigure(nextConfig);
 
     log.info(
       {
-        primaryProvider: llmPatch.primaryProvider,
-        fallbackOrder: llmPatch.fallbackOrder,
+        primaryProvider: nextConfig.primaryProvider,
+        fallbackOrder: nextConfig.fallbackOrder,
       },
       "LLM provider reconfigured",
     );
@@ -307,9 +290,9 @@ export class SettingsManager {
 
   private getApiKeyStatuses(): Record<LLMProviderName, ApiKeyStatus> {
     return {
-      gemini: this.classifyApiKey(process.env[API_KEY_ENV_MAP.gemini]),
-      claude: this.classifyApiKey(process.env[API_KEY_ENV_MAP.claude]),
-      nvidia: this.classifyApiKey(process.env[API_KEY_ENV_MAP.nvidia]),
+      gemini: this.classifyApiKey(resolveProviderApiKey("gemini")),
+      claude: this.classifyApiKey(resolveProviderApiKey("claude")),
+      nvidia: this.classifyApiKey(resolveProviderApiKey("nvidia")),
     };
   }
 
@@ -320,7 +303,7 @@ export class SettingsManager {
    * - >=10 chars → "configured"
    */
   private classifyApiKey(value: string | undefined): ApiKeyStatus {
-    if (!value || value.length === 0) {
+    if (!value) {
       return "missing";
     }
     if (value.length < 10) {
@@ -330,32 +313,76 @@ export class SettingsManager {
   }
 
   private getCircuitBreakerInfos(): CircuitBreakerInfo[] {
-    const breakers: Array<{ provider: LLMProviderName; breaker: any }> = [
-      { provider: "claude", breaker: this.cortex.claudeBreaker },
-      { provider: "gemini", breaker: this.cortex.geminiBreaker },
-      { provider: "nvidia", breaker: this.cortex.nvidiaBreaker },
-    ];
+    const snapshots = this.tenantManager.getCircuitBreakerSnapshot();
+    const source =
+      snapshots.length > 0 ? snapshots : this.getAdministrativeSnapshots();
+    const grouped = new Map<LLMProviderName, CircuitBreakerSnapshot[]>();
 
-    return breakers.map(({ provider, breaker }) => {
-      const state = breaker.getState() as CircuitBreakerInfo["state"];
-      const failureCount = breaker.getFailureCount();
-      const lastFailureTime = breaker.getLastFailureTime() as number;
-      const resetTimeout = breaker.getResetTimeout() as number;
+    for (const snapshot of source) {
+      const entries = grouped.get(snapshot.provider) ?? [];
+      entries.push(snapshot);
+      grouped.set(snapshot.provider, entries);
+    }
 
-      let estimatedRecoveryMs: number | null = null;
-      if (state === "OPEN" && lastFailureTime > 0) {
-        const elapsed = Date.now() - lastFailureTime;
-        estimatedRecoveryMs = Math.max(0, resetTimeout - elapsed);
-      }
+    return (["claude", "gemini", "nvidia"] as const).map((provider) => {
+      const entries = grouped.get(provider) ?? [];
+      const state = entries.some((entry) => entry.state === "OPEN")
+        ? "OPEN"
+        : entries.some((entry) => entry.state === "HALF_OPEN")
+          ? "HALF_OPEN"
+          : "CLOSED";
+      const failureCount = entries.reduce(
+        (total, entry) => total + entry.failureCount,
+        0,
+      );
+      const lastFailureTimestamp = entries.reduce<number | null>(
+        (latest, entry) =>
+          entry.lastFailureTimestamp !== null &&
+          (latest === null || entry.lastFailureTimestamp > latest)
+            ? entry.lastFailureTimestamp
+            : latest,
+        null,
+      );
+      const recoveryTimes = entries
+        .filter(
+          (entry) =>
+            entry.state === "OPEN" && entry.estimatedRecoveryMs !== null,
+        )
+        .map((entry) => entry.estimatedRecoveryMs as number);
 
       return {
         provider,
         state,
         failureCount,
-        lastFailureTimestamp: lastFailureTime > 0 ? lastFailureTime : null,
-        estimatedRecoveryMs,
+        lastFailureTimestamp,
+        estimatedRecoveryMs:
+          state === "OPEN" && recoveryTimes.length > 0
+            ? Math.min(...recoveryTimes)
+            : null,
       };
     });
+  }
+
+  private getAdministrativeSnapshots(): CircuitBreakerSnapshot[] {
+    return Array.from(this.cortex.getCircuitBreakers()).map(
+      ([provider, breaker]) => {
+        const state = breaker.getState();
+        const lastFailureTime = breaker.getLastFailureTime();
+        return {
+          provider,
+          state,
+          failureCount: breaker.getFailureCount(),
+          lastFailureTimestamp: lastFailureTime > 0 ? lastFailureTime : null,
+          estimatedRecoveryMs:
+            state === "OPEN" && lastFailureTime > 0
+              ? Math.max(
+                  0,
+                  breaker.getResetTimeout() - (Date.now() - lastFailureTime),
+                )
+              : null,
+        };
+      },
+    );
   }
 
   private getTemplateStates(): TemplateState[] {

@@ -9,7 +9,12 @@ const root = join(__dirname, "..");
 mkdirSync(join(root, "dist/config/agents"), { recursive: true });
 
 // Copy JSON config files
-const jsonFiles = ["registry.json", "tenant-profiles.json", "templates.json"];
+const jsonFiles = [
+  "registry.json",
+  "tenant-profiles.json",
+  "templates.json",
+  "domain-registry.json",
+];
 for (const file of jsonFiles) {
   cpSync(join(root, "src/config", file), join(root, "dist/config", file));
 }

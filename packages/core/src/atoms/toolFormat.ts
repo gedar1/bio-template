@@ -1,62 +1,90 @@
-/**
- * Funciones puras para formatear herramientas MCP al formato de cada LLM provider.
- * Sin estado, sin efectos secundarios.
- */
+import { ValidationError } from "../errors.js";
+import type {
+  JSONSchemaObject,
+  JSONSchemaType,
+  LLMTool,
+} from "../system/providers/providerTypes.js";
 
-/**
- * Convierte herramientas MCP unificadas al formato que espera Anthropic Claude.
- */
-export function formatToolsForAnthropic(tools: any[]): any[] {
-  return tools.map((t) => ({
-    name: t.name,
-    description: t.description || "",
-    input_schema: {
-      type: "object",
-      properties: t.inputSchema.properties,
-      required: t.inputSchema.required,
-    },
-  }));
+export interface AnthropicToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly input_schema: JSONSchemaObject & { readonly type: "object" };
+}
+export interface OpenAIToolDefinition {
+  readonly type: "function";
+  readonly function: {
+    readonly name: string;
+    readonly description: string;
+    readonly parameters: JSONSchemaObject;
+  };
+}
+export interface GeminiToolDefinition {
+  readonly functionDeclarations: readonly {
+    readonly name: string;
+    readonly description: string;
+    readonly parameters: Record<string, unknown>;
+  }[];
 }
 
-/**
- * Convierte herramientas MCP unificadas al formato OpenAI-compatible (NVIDIA, OpenAI, etc.).
- */
-export function formatToolsForOpenAI(tools: any[]): any[] {
-  return tools.map((t) => ({
+function objectSchema(
+  tool: LLMTool,
+): JSONSchemaObject & { readonly type: "object" } {
+  const schema = tool.inputSchema;
+  if (schema.type !== undefined && schema.type !== "object")
+    throw new ValidationError(`La tool ${tool.name} requiere un schema object`);
+  return { ...schema, type: "object" };
+}
+function geminiType(type: JSONSchemaType | undefined): string {
+  return (type ?? "string").toUpperCase();
+}
+function toGeminiSchema(schema: JSONSchemaObject): Record<string, unknown> {
+  const result: Record<string, unknown> = { type: geminiType(schema.type) };
+  if (schema.description) result.description = schema.description;
+  if (schema.required) result.required = [...schema.required];
+  if (schema.enum) result.enum = [...schema.enum];
+  if (schema.properties) {
+    const properties: Record<string, unknown> = {};
+    for (const [name, child] of Object.entries(schema.properties))
+      properties[name] = toGeminiSchema(child);
+    result.properties = properties;
+  }
+  if (schema.items) result.items = toGeminiSchema(schema.items);
+  if (schema.additionalProperties !== undefined)
+    result.additionalProperties = schema.additionalProperties;
+  return result;
+}
+
+export function formatToolsForAnthropic(
+  tools: readonly LLMTool[],
+): AnthropicToolDefinition[] {
+  return tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description ?? "",
+    input_schema: objectSchema(tool),
+  }));
+}
+export function formatToolsForOpenAI(
+  tools: readonly LLMTool[],
+): OpenAIToolDefinition[] {
+  return tools.map((tool) => ({
     type: "function",
     function: {
-      name: t.name,
-      description: t.description || "",
-      parameters: {
-        type: "object",
-        properties: t.inputSchema.properties,
-        required: t.inputSchema.required || [],
-      },
+      name: tool.name,
+      description: tool.description ?? "",
+      parameters: objectSchema(tool),
     },
   }));
 }
-
-/**
- * Convierte herramientas MCP unificadas al formato que espera Google Gemini.
- */
-export function formatToolsForGemini(tools: any[]): any[] {
-  const functionDeclarations = tools.map((t) => {
-    const properties: any = {};
-    for (const [key, val] of Object.entries(t.inputSchema.properties)) {
-      properties[key] = {
-        type: (val as any).type?.toUpperCase() || "STRING",
-        description: (val as any).description || "",
-      };
-    }
-    return {
-      name: t.name,
-      description: t.description || "",
-      parameters: {
-        type: "OBJECT",
-        properties,
-        required: t.inputSchema.required || [],
-      },
-    };
-  });
-  return [{ functionDeclarations }];
+export function formatToolsForGemini(
+  tools: readonly LLMTool[],
+): GeminiToolDefinition[] {
+  return [
+    {
+      functionDeclarations: tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description ?? "",
+        parameters: toGeminiSchema(objectSchema(tool)),
+      })),
+    },
+  ];
 }

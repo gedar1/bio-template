@@ -10,6 +10,10 @@ export {
 export { chooseModel } from "./modelSelection.js";
 export { resolveTools, resolveAllTools } from "./registry.js";
 export type { CellTypeDefinition } from "./registry.js";
+export type {
+  JSONSchemaObject,
+  LLMTool,
+} from "../system/providers/providerTypes.js";
 export {
   computeEmbedding,
   cosineSimilarity,
