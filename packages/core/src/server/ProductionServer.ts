@@ -6,7 +6,6 @@ import {
 initTelemetry();
 
 import * as dotenv from "dotenv";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { HealthServer } from "./HealthServer.js";
 import { TenantManager } from "./TenantManager.js";
@@ -21,7 +20,7 @@ import { registerAllRoutes } from "./RouteRegistry.js";
 import { SettingsManager } from "./SettingsManager.js";
 import { TemplateStateStore } from "./TemplateStateStore.js";
 import { UnifiedCortex } from "../system/implementations/UnifiedCortex.js";
-import type { Registry } from "../config/mergeRegistry.js";
+import { loadApplicationRegistry } from "../config/mergeRegistry.js";
 import { isPlatformEnabled } from "./middleware/platformAuth.js";
 import { initializePlatformSchema } from "./services/platformSchema.js";
 import { TenantRegistryService } from "./services/TenantRegistryService.js";
@@ -36,7 +35,6 @@ import Database from "better-sqlite3";
 dotenv.config();
 
 const log = createLogger("ProductionServer");
-const require = createRequire(import.meta.url);
 
 /**
  * Entry point de producción con multi-tenancy.
@@ -67,8 +65,8 @@ async function main() {
     );
   }
 
-  // 1. Core registry — domain applications inject their composition at their entrypoint.
-  const composedRegistry = require("../config/registry.json") as Registry;
+  // 1. Registry compuesto: core + extensión declarativa del dominio.
+  const composedRegistry = loadApplicationRegistry();
   log.info(
     { totalCells: composedRegistry.cells.length },
     "Core registry loaded",

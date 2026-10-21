@@ -140,11 +140,21 @@ const ROUTE_REGISTRATIONS: RouteRegistration[] = [
           d.platformHealthCalculator,
           d.platformAlertService,
           d.tenantAuthService,
+          d.tenantManager,
         );
       } else {
         const dummyRegistry = new TenantRegistryServiceImpl();
         const dummyAuditLogger = new AuditLoggerImpl();
-        setupPlatformRoutes(s, dummyRegistry, dummyAuditLogger);
+        setupPlatformRoutes(
+          s,
+          dummyRegistry,
+          dummyAuditLogger,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+        );
       }
     },
   },

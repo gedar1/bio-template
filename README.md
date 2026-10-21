@@ -9,8 +9,13 @@ bio-template/
 ├── packages/core/          ← motor sincronizado + extensión de ejemplo
 │   └── src/
 │       ├── molecules/ExampleMolecule.ts
-│       ├── config/domain-*.{json,ts,md}
-│       ├── config/applicationComposition.ts
+│       ├── config/
+│       │   ├── agents/           ← Agentes de dominio
+│       │   ├── templates/        ← Plantillas
+│       │   ├── tenants/          ← Perfiles por tenant
+│       │   ├── domain-registry.json
+│       │   ├── domain-profile.ts
+│       │   └── applicationComposition.ts
 │       └── application-cell.ts
 ├── scripts/                ← utilidades sincronizadas desde bio-core
 ├── .kiro/steering/         ← steering canónico compartido
@@ -40,11 +45,20 @@ npm run build:ts
 
 `better-sqlite3` no es opcional en este cambio: es una dependencia nativa separada y obligatoria para SQLite, con sus propios requisitos de prebuild o compilación.
 
+`mergeRegistry` valida `registry.json` y `domain-registry.json` con Zod y rechaza tipos duplicados o JSON inválido; el core no se reemplaza. `validators.ts`, `CellServer` y `ProductionServer` consumen el registry fusionado, por lo que un tipo de dominio como `example` debe aparecer también en `domain-profile.ts` y tener handlers registrados en `applicationComposition.ts`.
+
 ## Registrar una cell de dominio
 
 Una aplicación vertical registra sus capacidades en `packages/core/src/config/applicationComposition.ts`: combina `registry.json` con `domain-registry.json`, crea la molécula en un `factory` y registra sus tools en `registerTools`. `CellServer` recibe esa composición dentro del proceso MCP; no se serializan funciones por transporte.
 
 Para que `BaseOrganisms` lance la composición de la aplicación, usa el entrypoint compilado y define `BIOCORE_CELL_SERVER_PATH` con la ruta absoluta a `packages/core/dist/application-cell.js`. Ese entrypoint importa `createApplicationComposition()` y llama a `runCellServer()`. Así una aplicación vertical añade una cell sin modificar ni editar switches de `@bio/core`.
+
+### Troubleshooting
+
+- **El estímulo de dominio aparece como inválido:** revisa que el tipo esté en `domain-registry.json`, que no duplique un tipo de `registry.json` y que también esté en `allowedCells` del perfil. El merge falla al arrancar en vez de ocultar la entrada.
+- **La mutación funciona pero no aparecen las tools del dominio:** configura `BIOCORE_CELL_SERVER_PATH` apuntando al `packages/core/dist/application-cell.js` compilado. El fallback `packages/core/dist/cells/CellServer.js` es el servidor genérico y no registra handlers de `applicationComposition.ts`.
+- **No se encuentran datos del tenant:** las moléculas de dominio reciben `DATABASE_DIR/tenants/{tenantId}.db`; `DATABASE_PATH` se reserva para la memoria/reflexes compartida. Comprueba `TENANT_PROFILE`, `BIOCORE_TENANT_ID` y `DATABASE_DIR` sin copiar BDs al repositorio.
+- **HNSW o embeddings no cargan:** `hnswlib-node` es opcional y la búsqueda cae a recorrido lineal. Si el binding de Transformers no está disponible, la memoria semántica usa un vector seguro y no guarda nuevos reflexes; SQLite sigue requiriendo `better-sqlite3` compatible.
 
 ## Mantener el template actualizado
 

@@ -35,17 +35,18 @@ import type {
   CellRuntimeContext,
   CellResource,
 } from "./CellComposition.js";
-import type { Registry } from "../config/mergeRegistry.js";
+import {
+  loadApplicationRegistry,
+  type Registry,
+} from "../config/mergeRegistry.js";
 
 const log = createLogger("CellServer");
 
 const require = createRequire(import.meta.url);
 const __dirname = getModuleDir(import.meta.url);
 
-// ─── Registry genérico por defecto ───────────────────────────────────────────
-const registry = require(
-  join(__dirname, "../config/registry.json"),
-) as Registry;
+// ─── Registry compuesto por defecto ──────────────────────────────────────────
+const registry: Registry = loadApplicationRegistry();
 
 export interface CellServerOptions {
   readonly allowedCells?: readonly string[];

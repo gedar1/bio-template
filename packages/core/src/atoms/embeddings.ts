@@ -24,13 +24,28 @@ export type Embedding = number[];
 
 // Singleton del pipeline de feature extraction (carga el modelo una vez)
 let _pipeline: Awaited<ReturnType<typeof pipeline>> | null = null;
+let embeddingAvailable = true;
+
+/** Indica si el pipeline semántico está disponible para la memoria refleja. */
+export function isEmbeddingAvailable(): boolean {
+  return embeddingAvailable;
+}
 
 async function getPipeline() {
-  _pipeline ??= await pipeline(
-    "feature-extraction",
-    "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
-  );
-  return _pipeline;
+  try {
+    _pipeline ??= await pipeline(
+      "feature-extraction",
+      "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+    );
+    return _pipeline;
+  } catch (error: unknown) {
+    embeddingAvailable = false;
+    log.warn(
+      { error: error instanceof Error ? error.message : String(error) },
+      "Embedding pipeline unavailable; using safe fallback",
+    );
+    return null;
+  }
 }
 
 /**
@@ -48,10 +63,10 @@ export async function preloadPipeline(): Promise<number> {
     const duration = Date.now() - start;
     log.info({ durationMs: duration }, "Embedding pipeline pre-loaded");
     return duration;
-  } catch (err: any) {
+  } catch (error: unknown) {
     log.warn(
-      { error: err.message },
-      "Failed to pre-load embedding pipeline, will retry on first use",
+      { error: error instanceof Error ? error.message : String(error) },
+      "Failed to pre-load embedding pipeline; using safe fallback",
     );
     return Date.now() - start;
   }
@@ -70,6 +85,13 @@ export async function preloadPipeline(): Promise<number> {
  */
 export async function computeEmbedding(text: string): Promise<Embedding> {
   const extractor = await getPipeline();
+  if (!extractor) {
+    log.debug(
+      { text: text.substring(0, 50) },
+      "Semantic embeddings unavailable",
+    );
+    return new Array(384).fill(0);
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const output = await (extractor as any)(text, {
     pooling: "mean",

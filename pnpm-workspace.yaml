@@ -1,0 +1,8 @@
+packages:
+  - packages/core
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  hnswlib-node: false
+  protobufjs: true
+  sharp: true

@@ -1,6 +1,7 @@
 import { createLogger } from "../../config/logger.js";
 import {
   computeEmbedding,
+  isEmbeddingAvailable,
   normalizeForEmbedding,
   extractParamsForReflex,
   deriveTemplate,
@@ -73,11 +74,39 @@ export class DefaultReflexExecutor implements IReflexExecutor {
 
   async queryReflex(input: string): Promise<ReflexMatch | null> {
     try {
-      const normalized = normalizeForEmbedding(input);
-      const embedding = await computeEmbedding(normalized);
-      return this.reflex.findSimilar(embedding);
+      // Single-phase Jev noul routing: load ALL reflexes, no embeddings pre-filtering
+      const candidates = this.reflex.loadAllReflexes();
+      if (candidates.length === 0) {
+        return null;
+      }
+
+      // Try Jev evaluation on all candidates
+      const { selectReflex } = await import("../../atoms/reflexSelector.js");
+      const selection = await selectReflex(input, candidates);
+
+      if (!selection) {
+        this.log.debug("No reflex selected by Jev or structured fallback");
+        return null;
+      }
+
+      // Map ReflexSelection back to ReflexMatch for backward compatibility
+      const match: ReflexMatch = {
+        record: selection.record,
+        similarity: selection.confidence,
+        compositeScore: selection.confidence,
+        mode: selection.confidence >= 0.95 ? "reflex" : "hint",
+      };
+
+      this.log.debug("Reflex selected via single-phase Jev routing", {
+        reflexId: selection.record.id,
+        source: selection.source,
+        confidence: selection.confidence,
+        mode: match.mode,
+      });
+
+      return match;
     } catch (err: any) {
-      this.log.warn("No se pudo consultar reflex", { error: err.message });
+      this.log.warn("Reflex query failed", { error: err.message });
       return null;
     }
   }
@@ -87,6 +116,12 @@ export class DefaultReflexExecutor implements IReflexExecutor {
     try {
       const normalized = normalizeForEmbedding(this._currentInput);
       const embedding = await computeEmbedding(normalized);
+      if (!isEmbeddingAvailable()) {
+        this.log.debug(
+          "Memoria refleja semántica desactivada; no se guarda reflex",
+        );
+        return;
+      }
 
       const argTemplates: ReflexArgTemplates = this._currentStepArgs.map(
         (args) => deriveTemplate(args as Record<string, unknown>),

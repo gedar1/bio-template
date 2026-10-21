@@ -736,6 +736,7 @@ function handleAcknowledgeAlert(
  *   GET  /api/platform/metrics/tenant           — Per-tenant metrics (requires tenant_id, optional from/to)
  *   GET  /api/platform/alerts                   — Active alerts
  *   POST /api/platform/alerts/acknowledge       — Acknowledge alert (requires alert_id)
+ *   POST /api/platform/semantic_route           — Semantic routing for user message matching
  *
  * All endpoints except login require super_admin JWT authentication.
  * All responses use the API envelope format.
@@ -751,6 +752,7 @@ function handleAcknowledgeAlert(
  * @param healthCalculator - HealthStatusCalculator for tenant health
  * @param alertService - AlertService for alerts endpoints
  * @param tenantAuthService - TenantAuthService for API key generation and management
+ * @param tenantManager - TenantManager for semantic routing and tenant operations
  */
 export function setupPlatformRoutes(
   health: HealthServer,
@@ -760,7 +762,10 @@ export function setupPlatformRoutes(
   healthCalculator?: HealthStatusCalculator,
   alertService?: AlertService,
   tenantAuthService?: TenantAuthService,
+  tenantManager?: import("../TenantManager.js").TenantManager,
 ): void {
+  log.info("=== setupPlatformRoutes called - registering routes ===");
+  console.log("[SETUP-PLATFORM-ROUTES] Starting route registration");
   // ─── POST /api/platform/auth/login ──────────────────────────────────────
   // Public endpoint: validates PLATFORM_SECRET and issues JWT
   health.registerData("platform/auth/login", async (body?: any) => {
@@ -969,6 +974,93 @@ export function setupPlatformRoutes(
     return handleGetAlerts(params || {}, alertService);
   });
 
+  // ─── POST /api/platform/semantic_route ────────────────────────────────────
+  // Semantic routing: evaluates user message against reflex task_summary list
+  // Returns ranking of matching reflexes with confidence scores
+  health.registerData("semantic_route", async (params?: any) => {
+    log.info("=== semantic_route endpoint called ===", { params });
+
+    const authError = requireAuth(params || {});
+    if (authError) return authError;
+
+    const tenantId = (params?.tenant_id as string) || "default";
+    const userMessage = params?.user_message as string | undefined;
+
+    if (!userMessage) {
+      return platformResponse(
+        422,
+        errorEnvelope("VALIDATION_ERROR", "Missing user_message parameter"),
+      );
+    }
+
+    try {
+      // Call TenantManager to evaluate semantic route
+      if (!tenantManager) {
+        log.error("TenantManager not available");
+        return platformResponse(
+          503,
+          errorEnvelope(
+            "SERVICE_UNAVAILABLE",
+            "TenantManager is not configured",
+          ),
+        );
+      }
+
+      log.info(
+        { tenantId, userMessage },
+        "=== Calling tenantManager.evaluateSemanticRoute ===",
+      );
+
+      const result = await tenantManager.evaluateSemanticRoute(
+        tenantId,
+        userMessage,
+      );
+
+      log.info(
+        {
+          tenantId,
+          rankingCount: result.ranking.length,
+          escalateToLLM: result.escalate_to_llm,
+        },
+        "=== evaluateSemanticRoute returned ===",
+      );
+
+      return platformResponse(
+        200,
+        successEnvelope({
+          tenant_id: tenantId,
+          user_message: userMessage,
+          ranking: result.ranking,
+          top_match: result.top_match,
+          model_confidence: result.model_confidence,
+          escalate_to_llm: result.escalate_to_llm,
+          phase: result.phase,
+          // Fase 3: Multi-Intent Composition fields
+          activated_reflexes: result.activated_reflexes,
+          candidate_reflexes: result.candidate_reflexes,
+          intent_count: result.intent_count,
+          execution_chain: result.execution_chain,
+          execution_strategy: result.execution_strategy,
+          execution_dependencies: result.execution_dependencies,
+          multi_intent_detected: result.multi_intent_detected,
+          verification_results: result.verification_results,
+        }),
+      );
+    } catch (error: any) {
+      log.error(
+        { error: error.message, stack: error.stack },
+        "=== semantic_route error ===",
+      );
+      return platformResponse(
+        500,
+        errorEnvelope(
+          "INTERNAL_ERROR",
+          `Failed to evaluate semantic route: ${error.message}`,
+        ),
+      );
+    }
+  });
+
   // ─── POST /api/platform/alerts/acknowledge ────────────────────────────────
   // Acknowledges an alert by ID
   health.registerData("platform/alerts/acknowledge", async (params?: any) => {
@@ -984,4 +1076,7 @@ export function setupPlatformRoutes(
 
     return handleAcknowledgeAlert(params || {}, alertService, auditLogger);
   });
+
+  log.info("=== setupPlatformRoutes finished - all routes registered ===");
+  console.log("[SETUP-PLATFORM-ROUTES] Finished registering all routes");
 }

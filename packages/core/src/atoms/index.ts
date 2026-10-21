@@ -22,6 +22,7 @@ export {
   serializeEmbedding,
   deserializeEmbedding,
   preloadPipeline,
+  isEmbeddingAvailable,
 } from "./embeddings.js";
 export type { Embedding } from "./embeddings.js";
 export {
@@ -50,3 +51,13 @@ export {
   getToolRiskLevel,
 } from "./executionGuardrail.js";
 export type { GuardrailResult } from "./executionGuardrail.js";
+export {
+  selectReflex,
+  jevEvaluateAll,
+  selectStructuredFallback,
+} from "./reflexSelector.js";
+export type { ReflexSelection } from "./reflexSelector.js";
+export {
+  REFLEX_SELECTION_THRESHOLD,
+  REFLEX_AMBIGUITY_MARGIN,
+} from "./reflexSelector.js";

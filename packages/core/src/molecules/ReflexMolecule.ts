@@ -767,6 +767,57 @@ export class ReflexMolecule implements IMolecule {
     }));
   }
 
+  /**
+   * Loads ALL reflexes from the database without embeddings filtering.
+   * Used for single-phase Jev noul routing (no pre-filtering).
+   *
+   * Returns all reflexes sorted by success count descending.
+   *
+   * @returns All reflex records unsorted by similarity, ready for Jev evaluation
+   */
+  loadAllReflexes(): ReflexRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, task_summary, sequence, steps_json,
+                success_count, failure_count, last_used,
+                arg_templates_json, schema_versions
+         FROM reflexes
+         ORDER BY success_count DESC, last_used DESC`,
+      )
+      .all() as Array<{
+      id: number;
+      task_summary: string;
+      sequence: string;
+      steps_json: string;
+      success_count: number;
+      failure_count: number;
+      last_used: number;
+      arg_templates_json: string | null;
+      schema_versions: string | null;
+    }>;
+
+    log.debug(
+      { count: rows.length },
+      "Loaded all reflexes for Jev evaluation (single-phase routing)",
+    );
+
+    return rows.map((row) => ({
+      id: row.id,
+      taskSummary: row.task_summary,
+      sequence: row.sequence,
+      steps: JSON.parse(row.steps_json) as ReflexStep[],
+      successCount: row.success_count,
+      failureCount: row.failure_count,
+      lastUsed: row.last_used,
+      argTemplates: row.arg_templates_json
+        ? deserializeArgTemplates(row.arg_templates_json)
+        : null,
+      schemaVersions: row.schema_versions
+        ? JSON.parse(row.schema_versions)
+        : null,
+    }));
+  }
+
   /** Elimina un reflex por ID (para limpieza manual) */
   remove(id: number): boolean {
     const result = this.db.prepare("DELETE FROM reflexes WHERE id = ?").run(id);
