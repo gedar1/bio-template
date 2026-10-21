@@ -49,11 +49,11 @@ export interface ExecutionOrderResolution {
 }
 
 /**
- * SemanticRouteResultV3: extiende SemanticRouteResult con composición multi-intent
- * Mantiene todos los campos de Fase 1-2 para backward compatibility
+ * Importar SemanticRouteResult desde el módulo principal
+ * (En TenantManager.ts es definida como interface)
  */
-export interface SemanticRouteResultV3 {
-  // Fase 1-2 fields (todos presentes para backward compat)
+// Para evitar circular imports, define aquí la base y extiende en TenantManager
+export type SemanticRouteResult = {
   ranking: Array<{
     id: number;
     task_summary: string;
@@ -66,17 +66,23 @@ export interface SemanticRouteResultV3 {
     confidence: number;
     reliability: "high" | "medium" | "low";
   } | null;
-  model_confidence: number; // 0-1, normalizado desde top_match.confidence
-  escalate_to_llm: boolean; // true si reliability="low" O multi_intent_detected
+  model_confidence: number;
+  escalate_to_llm: boolean;
   phase: "fast-search" | "jev-reranking";
-  activated_reflexes: number[]; // IDs con confidence >= 85%
-  candidate_reflexes: number[]; // IDs con 60% < confidence < 85%
-  multi_intent_detected: boolean; // true si len(activated) >= 2
+  activated_reflexes: number[];
+  candidate_reflexes: number[];
+  multi_intent_detected: boolean;
   verification_results: Record<
     string,
     { llm_decision: "accept" | "reject"; reasoning: string }
-  >; // LLM verification results
+  >;
+};
 
+/**
+ * SemanticRouteResultV3: extiende SemanticRouteResult con composición multi-intent
+ * Mantiene todos los campos de Fase 1-2 para backward compatibility
+ */
+export interface SemanticRouteResultV3 extends SemanticRouteResult {
   // Fase 3 fields (nuevos, para composición multi-intent)
   execution_chain: ExecutionChainNode[]; // Cadena de ejecución ordenada
   execution_strategy: "sequential" | "parallel"; // Estrategia seleccionada

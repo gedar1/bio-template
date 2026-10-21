@@ -407,7 +407,7 @@ export class SettingsManager {
 
     try {
       const configDir = join(__dirname, "../config");
-      const templatesPath = join(configDir, "templates.json");
+      const templatesPath = join(configDir, "templates", "templates.json");
       const raw = readFileSync(templatesPath, "utf-8");
       templates.push(...(JSON.parse(raw) as TaskTemplate[]));
 

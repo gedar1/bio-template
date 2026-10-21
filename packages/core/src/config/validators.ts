@@ -1,15 +1,7 @@
 import { z } from "zod";
-import { createRequire } from "node:module";
-import { join } from "node:path";
-import type { CellTypeDefinition } from "../atoms/index.js";
-import { getModuleDir } from "../atoms/paths.js";
+import { loadApplicationRegistry } from "./mergeRegistry.js";
 
-const require = createRequire(import.meta.url);
-const __dirname = getModuleDir(import.meta.url);
-
-const registry = require(join(__dirname, "registry.json")) as {
-  cells: CellTypeDefinition[];
-};
+const registry = loadApplicationRegistry();
 
 // ─── Tipos válidos de estímulo (derivados del registry) ───────────────────────
 const cellTypes = registry.cells.map((c) => c.type) as [string, ...string[]];

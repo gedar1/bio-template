@@ -32,7 +32,7 @@ const __dirname = getModuleDir(import.meta.url);
 const log = createLogger("TenantManager");
 
 // ============= Fase 2: Intent Detection + LLM Verification =============
-const HIGH_CONFIDENCE_THRESHOLD = 85;
+const HIGH_CONFIDENCE_THRESHOLD = 75; // Fase 3: multi-intent ≥ 75%
 const MEDIUM_CONFIDENCE_THRESHOLD = 60;
 
 interface IntentDetectionResult {
@@ -711,11 +711,17 @@ export class TenantManager {
                 questions: { dependency: dependencyQuestion },
               });
 
-              const choiceResponse = (response.answers.dependency as any) || {};
+              // Validar respuesta de Jev con tipos específicos
+              const choiceResponse = response.answers.dependency as
+                | {
+                    confidence?: number;
+                    choice?: string;
+                  }
+                | undefined;
               const confidence = Math.round(
-                (choiceResponse.confidence || 0) * 100,
+                (choiceResponse?.confidence || 0) * 100,
               );
-              const answer = (choiceResponse.choice || "").toLowerCase();
+              const answer = (choiceResponse?.choice || "").toLowerCase();
 
               log.debug(
                 {
@@ -1129,68 +1135,93 @@ export class TenantManager {
     let intentCount = intents.activated.length;
     let executionDependencies: ExecutionDependency[] = [];
 
-    if (intents.activated.length >= 2) {
-      log.info(
-        { tenantId, activatedCount: intents.activated.length },
-        "[Multi-Intent Detection] Multi-intent detected, starting composition",
-      );
+    if (intents.activated.length >= 1) {
+      if (intents.activated.length >= 2) {
+        log.info(
+          { tenantId, activatedCount: intents.activated.length },
+          "[Multi-Intent Detection] Multi-intent detected, starting composition",
+        );
 
-      // Detectar secuencias implícitas
-      const sequenceDetection = await this.detectMultiIntentSequence(
-        userMessage,
-        intents,
-      );
+        // Detectar secuencias implícitas
+        const sequenceDetection = await this.detectMultiIntentSequence(
+          userMessage,
+          intents,
+        );
 
-      executionDependencies = sequenceDetection.dependencies;
+        executionDependencies = sequenceDetection.dependencies;
 
-      log.info(
-        {
-          dependencyCount: sequenceDetection.dependencies.length,
-          impliedOrder: sequenceDetection.implied_order,
-        },
-        "[Dependency Resolution] Sequence detection complete",
-      );
+        log.info(
+          {
+            dependencyCount: sequenceDetection.dependencies.length,
+            impliedOrder: sequenceDetection.implied_order,
+          },
+          "[Dependency Resolution] Sequence detection complete",
+        );
 
-      // Convertir dependencies a Map<source, targets[]>
-      const depMap = new Map<number, number[]>();
-      for (const dep of sequenceDetection.dependencies) {
-        if (!depMap.has(dep.source_id)) {
-          depMap.set(dep.source_id, []);
+        // Convertir dependencies a Map<source, targets[]>
+        const depMap = new Map<number, number[]>();
+        for (const dep of sequenceDetection.dependencies) {
+          if (!depMap.has(dep.source_id)) {
+            depMap.set(dep.source_id, []);
+          }
+          depMap.get(dep.source_id)!.push(dep.target_id);
         }
-        depMap.get(dep.source_id)!.push(dep.target_id);
+
+        // Resolver orden de ejecución
+        const orderResolution = this.resolveExecutionOrder(
+          intents.activated,
+          depMap,
+        );
+
+        log.info(
+          {
+            strategy: orderResolution.strategy,
+            chainLength: orderResolution.chain.length,
+            hasCycles: orderResolution.has_cycles,
+          },
+          "[Execution Plan] Execution order resolved",
+        );
+
+        // Construir execution_chain con metadata completa
+        executionChain = this.buildExecutionChain(
+          intents.activated,
+          orderResolution,
+        );
+        executionStrategy = orderResolution.strategy;
+
+        log.info(
+          {
+            executionChain: executionChain.map((n) => ({
+              id: n.id,
+              order: n.execution_order,
+            })),
+          },
+          "[Execution Strategy] Execution chain finalized",
+        );
+      } else {
+        // Single intent: create simple execution chain
+        log.info(
+          { tenantId, reflexId: intents.activated[0].id },
+          "[Single-Intent] Single reflex detected, creating simple chain",
+        );
+
+        executionChain = [
+          {
+            id: intents.activated[0].id,
+            task_summary: intents.activated[0].task_summary,
+            confidence: intents.activated[0].confidence,
+            status: "activated",
+            execution_order: 1,
+            depends_on: null,
+          },
+        ];
+        executionStrategy = "sequential";
+
+        log.info(
+          { chainLength: executionChain.length },
+          "[Execution Strategy] Single-intent chain created",
+        );
       }
-
-      // Resolver orden de ejecución
-      const orderResolution = this.resolveExecutionOrder(
-        intents.activated,
-        depMap,
-      );
-
-      log.info(
-        {
-          strategy: orderResolution.strategy,
-          chainLength: orderResolution.chain.length,
-          hasCycles: orderResolution.has_cycles,
-        },
-        "[Execution Plan] Execution order resolved",
-      );
-
-      // Construir execution_chain con metadata completa
-      executionChain = this.buildExecutionChain(
-        intents.activated,
-        orderResolution,
-      );
-      executionStrategy = orderResolution.strategy;
-
-      log.info(
-        {
-          executionChain: executionChain.map((n) => ({
-            id: n.id,
-            order: n.execution_order,
-          })),
-        },
-        "[Execution Strategy] Execution chain finalized",
-      );
     }
 
     const result: SemanticRouteResult = {
@@ -1436,8 +1467,12 @@ export class TenantManager {
 
         // Extract noul scores and convert to confidence (0-1 → 0-100)
         batch.forEach((candidate, idx) => {
-          const noulResponse = response.answers[`candidate_${idx}`];
-          const noulScore = (noulResponse as any)?.noul || 0;
+          const noulResponse = response.answers[`candidate_${idx}`] as
+            | {
+                noul?: number;
+              }
+            | undefined;
+          const noulScore = noulResponse?.noul || 0;
           const confidence = Math.round(noulScore * 100);
 
           allRescored.push({
@@ -1533,8 +1568,12 @@ export class TenantManager {
 
         // Extract noul scores and convert to confidence (0-1 → 0-100)
         batch.forEach((reflex, idx) => {
-          const noulResponse = response.answers[`reflex_${idx}`];
-          const noulScore = (noulResponse as any)?.noul || 0;
+          const noulResponse = response.answers[`reflex_${idx}`] as
+            | {
+                noul?: number;
+              }
+            | undefined;
+          const noulScore = noulResponse?.noul || 0;
           const confidence = Math.round(noulScore * 100);
 
           allScored.push({

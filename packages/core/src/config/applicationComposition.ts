@@ -1,7 +1,5 @@
-import { createRequire } from "node:module";
 import { z } from "zod";
-import { mergeRegistry } from "./mergeRegistry.js";
-import type { Registry } from "./mergeRegistry.js";
+import { loadApplicationRegistry } from "./mergeRegistry.js";
 import { ToolExecutionError } from "../errors.js";
 import { ExampleMolecule } from "../molecules/ExampleMolecule.js";
 import { domainProfile } from "./domain-profile.js";
@@ -10,11 +8,7 @@ import type {
   CellRuntimeContext,
 } from "../cells/CellComposition.js";
 
-const require = createRequire(import.meta.url);
-const coreRegistry = require("./registry.json") as Registry;
-const domainRegistry = require("./domain-registry.json") as Registry;
-
-const applicationRegistry = mergeRegistry(coreRegistry, domainRegistry);
+const applicationRegistry = loadApplicationRegistry();
 const STATUS_SCHEMA = z.enum(["active", "inactive", "pending"]);
 
 function getExampleMolecule(context: CellRuntimeContext): ExampleMolecule {
@@ -78,7 +72,7 @@ export function createApplicationComposition(): CellComposition {
             {
               description: "Obtiene un registro del dominio por ID",
               inputSchema: {
-                id: z.number().int().positive(),
+                id: z.number().int().min(1),
               },
             },
             async ({ id }) => ({
@@ -99,7 +93,7 @@ export function createApplicationComposition(): CellComposition {
               description: "Lista registros del dominio",
               inputSchema: {
                 status: STATUS_SCHEMA.optional(),
-                limit: z.number().int().positive().max(100).optional(),
+                limit: z.number().int().min(1).max(100).optional(),
               },
             },
             async ({ status, limit }) => ({
@@ -123,7 +117,7 @@ export function createApplicationComposition(): CellComposition {
             {
               description: "Actualiza el estado de un registro",
               inputSchema: {
-                id: z.number().int().positive(),
+                id: z.number().int().min(1),
                 status: STATUS_SCHEMA,
               },
             },
@@ -148,7 +142,7 @@ export function createApplicationComposition(): CellComposition {
             {
               description: "Elimina un registro del dominio",
               inputSchema: {
-                id: z.number().int().positive(),
+                id: z.number().int().min(1),
               },
             },
             async ({ id }) => ({

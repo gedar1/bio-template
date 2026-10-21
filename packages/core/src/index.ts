@@ -95,7 +95,13 @@ export * from "./errors.js";
 export * from "./interfaces.js";
 
 // ─── Registry Composition ─────────────────────────────────────
-export { mergeRegistry } from "./config/mergeRegistry.js";
+export {
+  mergeRegistry,
+  loadApplicationRegistry,
+  RegistryConfigurationError,
+  RegistryEntrySchema,
+  RegistrySchema,
+} from "./config/mergeRegistry.js";
 export type { Registry, RegistryEntry } from "./config/mergeRegistry.js";
 export {
   registerDomainProfile,

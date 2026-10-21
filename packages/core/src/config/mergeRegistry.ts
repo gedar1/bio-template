@@ -1,4 +1,6 @@
+import { createRequire } from "node:module";
 import { z } from "zod";
+import { BioCoreError } from "../errors.js";
 
 export const RegistryEntrySchema = z.object({
   type: z.string().min(1),
@@ -7,40 +9,94 @@ export const RegistryEntrySchema = z.object({
   parent: z.string().optional(),
 });
 
-export type RegistryEntry = z.infer<typeof RegistryEntrySchema>;
+export const RegistrySchema = z.object({
+  cells: z.array(RegistryEntrySchema),
+});
 
-export interface Registry {
-  cells: RegistryEntry[];
+export type RegistryEntry = z.infer<typeof RegistryEntrySchema>;
+export type Registry = z.infer<typeof RegistrySchema>;
+
+export class RegistryConfigurationError extends BioCoreError {
+  constructor(message: string, context?: Record<string, unknown>) {
+    super(message, "REGISTRY_CONFIGURATION_ERROR", context);
+    this.name = "RegistryConfigurationError";
+  }
+}
+
+function validateRegistry(value: unknown, source: string): Registry {
+  const result = RegistrySchema.safeParse(value);
+  if (!result.success) {
+    throw new RegistryConfigurationError(
+      `Registry inválido en ${source}: ${result.error.issues
+        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+        .join(", ")}`,
+      { source },
+    );
+  }
+  return result.data;
+}
+
+function assertUniqueTypes(registry: Registry, source: string): void {
+  const seen = new Set<string>();
+  for (const cell of registry.cells) {
+    if (seen.has(cell.type)) {
+      throw new RegistryConfigurationError(
+        `Tipo de célula duplicado en ${source}: ${cell.type}`,
+        { source, type: cell.type },
+      );
+    }
+    seen.add(cell.type);
+  }
 }
 
 /**
- * Combina el registry del core con el de un domain package.
- * - Entradas del domain con type duplicado reemplazan las del core.
- * - Entradas inválidas (sin type o type vacío) se descartan silenciosamente.
- * - Si domainRegistry es undefined o vacío, retorna coreRegistry sin cambios.
+ * Combina el registry core con una extensión de dominio validando ambos lados.
+ * Las entradas duplicadas y los tipos inválidos fallan al arrancar para evitar
+ * que una capacidad anunciada quede distinta de sus handlers MCP.
  */
 export function mergeRegistry(
-  coreRegistry: Registry,
-  domainRegistry?: Registry,
+  coreRegistry: unknown,
+  domainRegistry?: unknown,
 ): Registry {
-  if (!domainRegistry || domainRegistry.cells.length === 0) {
-    return coreRegistry;
+  const core = validateRegistry(coreRegistry, "core registry");
+  assertUniqueTypes(core, "core registry");
+
+  if (domainRegistry === undefined) return core;
+
+  const domain = validateRegistry(domainRegistry, "domain registry");
+  assertUniqueTypes(domain, "domain registry");
+
+  const coreTypes = new Set(core.cells.map((cell) => cell.type));
+  const duplicate = domain.cells.find((cell) => coreTypes.has(cell.type));
+  if (duplicate) {
+    throw new RegistryConfigurationError(
+      `Tipo de célula duplicado entre core y dominio: ${duplicate.type}`,
+      { type: duplicate.type },
+    );
   }
 
-  const validDomainEntries = domainRegistry.cells.filter((entry) => {
-    const result = RegistryEntrySchema.safeParse(entry);
-    return result.success;
-  });
+  return validateRegistry(
+    { cells: [...core.cells, ...domain.cells] },
+    "registry fusionado",
+  );
+}
 
-  const merged = new Map<string, RegistryEntry>();
+const require = createRequire(import.meta.url);
 
-  for (const entry of coreRegistry.cells) {
-    merged.set(entry.type, entry);
+/** Carga, valida y fusiona los registries configurados para este runtime. */
+export function loadApplicationRegistry(): Registry {
+  let coreRegistry: unknown;
+  let domainRegistry: unknown;
+
+  try {
+    coreRegistry = require("./registry.json") as unknown;
+    domainRegistry = require("./domain-registry.json") as unknown;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new RegistryConfigurationError(
+      `No se pudieron cargar los registries configurados: ${message}`,
+    );
   }
 
-  for (const entry of validDomainEntries) {
-    merged.set(entry.type, entry); // Override core si existe
-  }
-
-  return { cells: Array.from(merged.values()) };
+  return mergeRegistry(coreRegistry, domainRegistry);
 }
