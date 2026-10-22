@@ -28,6 +28,7 @@ import type {
   SemanticRouteResultV3,
 } from "./types/semantic.js";
 import type { TenantDatabaseManager } from "../infrastructure/TenantDatabaseManager.js";
+import Database from "better-sqlite3";
 
 const __dirname = getModuleDir(import.meta.url);
 
@@ -234,16 +235,16 @@ export class TenantManager {
     await cortex.init();
 
     // Inyectar contexto del agente de dominio desde archivo .md
-    if (profileConfig?.agentFile) {
-      const agentPrompt = this.loadAgentFile(profileConfig.agentFile);
-      if (agentPrompt) {
-        cortex.addHistoryMessage(cortex.getSessionId(), {
-          role: "system",
-          content: agentPrompt,
-          timestamp: Date.now(),
-        });
-      }
-    }
+    // if (profileConfig?.agentFile) {
+    //   const agentPrompt = this.loadAgentFile(profileConfig.agentFile);
+    //   if (agentPrompt) {
+    //     cortex.addHistoryMessage(cortex.getSessionId(), {
+    //       role: "system",
+    //       content: agentPrompt,
+    //       timestamp: Date.now(),
+    //     });
+    //   }
+    // }
 
     const tenant: TenantInfo = {
       id: tenantId,
@@ -479,33 +480,33 @@ export class TenantManager {
   }
 
   /** Carga el archivo .md del agente de dominio */
-  private loadAgentFile(filename: string): string | null {
-    const paths = [
-      join(__dirname, "../", filename),
-      join(__dirname, "../../src", filename),
-      join(process.cwd(), "packages/core/src", filename),
-      join(__dirname, "../config/agents", filename),
-      join(__dirname, "../../config/agents", filename),
-      join(process.cwd(), "packages/core/dist/config/agents", filename),
-      join(process.cwd(), "packages/core/src/config/agents", filename),
-      join(process.cwd(), "packages/restaurant/src/config/agents", filename),
-      join(process.cwd(), "src/biocore/config/agents", filename),
-      join(process.cwd(), "dist/biocore/config/agents", filename),
-    ];
+  // private loadAgentFile(filename: string): string | null {
+  //   const paths = [
+  //     join(__dirname, "../", filename),
+  //     join(__dirname, "../../src", filename),
+  //     join(process.cwd(), "packages/core/src", filename),
+  //     join(__dirname, "../config/agents", filename),
+  //     join(__dirname, "../../config/agents", filename),
+  //     join(process.cwd(), "packages/core/dist/config/agents", filename),
+  //     join(process.cwd(), "packages/core/src/config/agents", filename),
+  //     join(process.cwd(), "packages/restaurant/src/config/agents", filename),
+  //     join(process.cwd(), "src/biocore/config/agents", filename),
+  //     join(process.cwd(), "dist/biocore/config/agents", filename),
+  //   ];
 
-    for (const p of paths) {
-      try {
-        const content = readFileSync(p, "utf-8");
-        log.debug({ file: filename, path: p }, "Agent file cargado");
-        return content;
-      } catch {
-        // intentar siguiente path
-      }
-    }
+  //   for (const p of paths) {
+  //     try {
+  //       const content = readFileSync(p, "utf-8");
+  //       log.debug({ file: filename, path: p }, "Agent file cargado");
+  //       return content;
+  //     } catch {
+  //       // intentar siguiente path
+  //     }
+  //   }
 
-    log.warn({ file: filename }, "Agent file no encontrado");
-    return null;
-  }
+  //   log.warn({ file: filename }, "Agent file no encontrado");
+  //   return null;
+  // }
 
   get size(): number {
     return this.tenants.size;
@@ -517,6 +518,54 @@ export class TenantManager {
    * @param jevRanking - Ranking de Jev (confidence en rango 0-100)
    * @returns IntentDetectionResult con 3 buckets: activated, candidates, ignored
    */
+  private async resolveAtomicDependencyChain(
+    reflexId: number,
+  ): Promise<number[]> {
+    try {
+      const dbPath = process.env.DATABASE_PATH || "./biocore.db";
+      const Database = (await import("better-sqlite3")).default;
+      const db = new Database(dbPath);
+
+      const chain: number[] = [];
+      const visited = new Set<number>();
+      const stack: number[] = [reflexId];
+
+      // DFS para encontrar toda la cadena de dependencias
+      while (stack.length > 0) {
+        const currentId = stack.pop()!;
+
+        if (visited.has(currentId)) continue;
+        visited.add(currentId);
+
+        // Buscar quién depende de currentId (fuentes previas)
+        const sources = db
+          .prepare(
+            `SELECT source_reflex_id FROM reflex_dependencies WHERE target_reflex_id = ? ORDER BY source_reflex_id ASC`,
+          )
+          .all(currentId) as Array<{ source_reflex_id: number }>;
+
+        for (const source of sources) {
+          if (!visited.has(source.source_reflex_id)) {
+            stack.push(source.source_reflex_id);
+          }
+        }
+
+        chain.push(currentId);
+      }
+
+      db.close();
+
+      // Retornar en orden correcto (fuentes primero, destino último)
+      return chain.reverse();
+    } catch (error: any) {
+      log.warn(
+        { reflexId, error: error.message },
+        "Failed to resolve atomic dependency chain",
+      );
+      return [reflexId]; // Fallback: solo el reflex original
+    }
+  }
+
   private jevDetectIntents(
     userMessage: string,
     jevRanking: Array<{ id: number; task_summary: string; confidence: number }>,
@@ -1289,40 +1338,12 @@ export class TenantManager {
     const tenant = await this.getTenant(tenantId);
     log.info({ tenantId }, "Tenant loaded");
 
-    // Load reflexes from database
-    log.info({ tenantId }, "Loading reflexes...");
-    const reflexes = await this.listReflexesForSemanticRoute(tenantId);
-    log.info({ tenantId, reflexCount: reflexes.length }, "Reflexes loaded");
-
-    if (reflexes.length === 0) {
-      log.warn({ tenantId }, "No reflexes found, returning empty ranking");
-      return {
-        ranking: [],
-        top_match: null,
-        model_confidence: 0,
-        escalate_to_llm: true,
-        phase: "fast-search",
-        activated_reflexes: [],
-        candidate_reflexes: [],
-        multi_intent_detected: false,
-        verification_results: {},
-      };
-    }
-
-    // Build routing prompt
-    log.info({ tenantId }, "Building routing prompt");
-    const routingPrompt = this.buildRoutingPrompt(userMessage, reflexes);
-    log.debug(
-      { routingPrompt: routingPrompt.substring(0, 200) },
-      "Routing prompt built",
-    );
-
-    // Call semantic router (2-phase)
+    // Call semantic router directly with tools.json (no need to load reflexes from BD)
     log.info({ tenantId }, "Calling semantic router");
     const rawRanking = await this.callSemanticRouter(
       tenant,
       userMessage,
-      routingPrompt,
+      "", // basePrompt not needed anymore
     );
     log.info({ tenantId, rankingCount: rawRanking.length }, "Ranking returned");
 
@@ -1351,11 +1372,41 @@ export class TenantManager {
         reasoning: verified.reasoning,
       };
 
-      // Si LLM acepta, mover a activated
+      // Si LLM acepta, mover a activated + resolver dependencias atómicas
       if (verified.decision === "accept") {
-        intents.activated.push(candidate);
+        // NUEVO: Resolver cadena completa de dependencias atómicas
+        const dependencyChain = await this.resolveAtomicDependencyChain(
+          candidate.id,
+        );
+
+        // Agregar toda la cadena de dependencias a activated
+        for (const reflexId of dependencyChain) {
+          const existing = intents.activated.find((r) => r.id === reflexId);
+          if (!existing) {
+            // Buscar reflex en candidatos o ranking para obtener metadata
+            const reflexData = intents.candidates.find(
+              (r) => r.id === reflexId,
+            ) || {
+              id: reflexId,
+              task_summary: `Atomic reflex ${reflexId}`,
+              confidence: candidate.confidence,
+            };
+            intents.activated.push(reflexData);
+          }
+        }
+
+        // Remover el candidato original y toda su cadena
         intents.candidates = intents.candidates.filter(
-          (c) => c.id !== candidate.id,
+          (c) => !dependencyChain.includes(c.id),
+        );
+
+        log.info(
+          {
+            originalId: candidate.id,
+            resolvedChain: dependencyChain,
+            newActivatedCount: intents.activated.length,
+          },
+          "[Dependency Resolution] Atomic reflex chain resolved and activated",
         );
       }
       // Si LLM rechaza o escalate, mantener en candidates
@@ -1527,7 +1578,7 @@ export class TenantManager {
         const atomicStmt = db.prepare(`
           SELECT id, task_summary
           FROM reflexes_atomic
-          ORDER BY success_count DESC, created_at DESC
+          ORDER BY success_rate DESC, created_at DESC
           LIMIT 150
         `);
 
@@ -1611,34 +1662,74 @@ export class TenantManager {
     basePrompt: string,
   ): Promise<Array<{ id: number; task_summary: string; confidence: number }>> {
     try {
-      const reflexes = this.extractReflexesFromPrompt(basePrompt);
+      // Use tools.json-based multi-step detection via reflexSelector + Jev
+      if (process.env.TYPESAFE_API_KEY) {
+        const { jevEvaluateAll } =
+          (await import("../atoms/reflexSelector.js")) as any;
 
-      if (reflexes.length === 0) {
-        log.warn(
-          { tenantId: tenant.id },
-          "No reflexes found in prompt, returning empty ranking",
+        // Read tools.json directly from filesystem
+        const { fileURLToPath } = await import("url");
+        const fs = await import("fs/promises");
+        const path = await import("path");
+        const __dirname = path.dirname(fileURLToPath(import.meta.url));
+        const toolsPath = path.resolve(__dirname, "../config/tools.json");
+        const toolsContent = await fs.readFile(toolsPath, "utf-8");
+        const toolsData: Record<string, string> = JSON.parse(toolsContent);
+
+        log.info(
+          { tenantId: tenant.id, totalTools: Object.keys(toolsData).length },
+          "Evaluating with tools.json via Jev",
         );
+
+        // Call Jev directly with toolsData (not as ReflexRecord array)
+        const jSelection = await jevEvaluateAll(userMessage, toolsData);
+
+        if (jSelection) {
+          // Extract tool names from chain
+          const chainTools = jSelection.record.sequence
+            .split("→")
+            .map((t: string) => t.trim());
+          const toolNames = Object.keys(toolsData);
+          const executionChain: Array<{
+            id: number;
+            task_summary: string;
+            confidence: number;
+          }> = [];
+
+          for (const toolName of chainTools) {
+            const toolIndex = toolNames.indexOf(toolName);
+
+            if (toolIndex >= 0) {
+              executionChain.push({
+                id: toolIndex + 1,
+                task_summary: `[Tool] ${toolName}`,
+                confidence: Math.round(
+                  (jSelection.confidence * 100) / chainTools.length,
+                ),
+              });
+            }
+          }
+
+          if (executionChain.length > 0) {
+            log.info(
+              {
+                tenantId: tenant.id,
+                chain: executionChain.map((t) => t.task_summary).join(" → "),
+              },
+              "Jev detected execution chain",
+            );
+            return executionChain;
+          }
+        }
+
+        log.warn({ tenantId: tenant.id }, "Jev abstained");
         return [];
       }
 
-      log.info(
-        { tenantId: tenant.id, totalReflexes: reflexes.length },
-        "Starting single-phase Jev routing",
-      );
-
-      // Single-phase: Evaluate ALL reflexes with Jev noul
-      if (process.env.TYPESAFE_API_KEY) {
-        log.info(
-          { tenantId: tenant.id, reflexCount: reflexes.length },
-          "Evaluating all reflexes with Jev",
-        );
-        return await this.jevEvaluateAll(userMessage, reflexes);
-      }
-
-      // Fallback: if Jev not available, return empty
+      // TYPESAFE_API_KEY not configured
       log.warn(
         { tenantId: tenant.id },
-        "TYPESAFE_API_KEY not configured, cannot evaluate reflexes",
+        "TYPESAFE_API_KEY not set, cannot use Jev",
       );
       return [];
     } catch (error: any) {

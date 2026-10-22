@@ -16,6 +16,10 @@
     "start": "node packages/core/dist/server/ProductionServer.js",
     "test": "vitest --run",
     "validate-template": "tsx scripts/validate-template-contract.ts --root .",
+    "fetch-task-summaries": "node scripts/fetch-task-summaries.js",
+    "parse-data-jev": "node scripts/parse-data-jev.js",
+    "copy-db-to-restaurant": "node scripts/copy-db-to-restaurant.js",
+    "copy-db": "node scripts/copy-db-to-project.js",
     "clean": "node -e \"const{rmSync}=require('fs');['packages/core/dist','packages/dashboard/dist'].forEach(d=>{try{rmSync(d,{recursive:true,force:true})}catch{}});console.log('Clean done')\""
   },
   "devDependencies": {

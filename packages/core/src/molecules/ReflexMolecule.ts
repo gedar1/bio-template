@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { createLogger } from "../config/logger.js";
+import { ENABLE_EMBEDDINGS } from "../config/embeddings.js";
 import type { IMolecule } from "./interfaces/IMolecule.js";
 import {
   cosineSimilarity,
@@ -190,18 +191,29 @@ export class ReflexMolecule implements IMolecule {
     this.db.pragma("journal_mode = WAL");
     this.initTable();
 
-    // Attempt to load hnswlib-node
-    await loadHnswlib();
+    // Log embeddings decision
+    if (ENABLE_EMBEDDINGS) {
+      log.info("Embeddings habilitados, usando HNSW search");
+    } else {
+      log.info("Embeddings deshabilitados, usando Jev-only routing");
+    }
 
-    // Rebuild vector index from existing data
-    await measureSpan(
-      "Molecule",
-      "vector_index_rebuild",
-      async () => {
-        this.rebuildIndex();
-      },
-      { "vector.source": "sqlite" },
-    );
+    // Attempt to load hnswlib-node (only if embeddings enabled)
+    if (ENABLE_EMBEDDINGS) {
+      await loadHnswlib();
+    }
+
+    // Rebuild vector index from existing data (only if embeddings enabled)
+    if (ENABLE_EMBEDDINGS) {
+      await measureSpan(
+        "Molecule",
+        "vector_index_rebuild",
+        async () => {
+          this.rebuildIndex();
+        },
+        { "vector.source": "sqlite" },
+      );
+    }
 
     log.info({ path: this.dbPath }, "ReflexMolecule conectada");
   }
@@ -430,7 +442,7 @@ export class ReflexMolecule implements IMolecule {
    *
    * @param taskSummary    - Descripción corta del input del usuario
    * @param steps          - Pasos de ejecución en orden
-   * @param embedding      - Vector del taskSummary (calculado con computeEmbedding)
+   * @param embedding      - Vector del taskSummary (calculado con computeEmbedding, ignored if ENABLE_EMBEDDINGS=false)
    * @param argTemplates   - Arg templates for each step (optional)
    * @param schemaVersions - Schema versions at creation time (optional)
    */
@@ -442,13 +454,21 @@ export class ReflexMolecule implements IMolecule {
     schemaVersions?: Record<string, string>,
   ): number {
     const sequence = normalizeSequence(steps.map((s) => s.action));
-    const serializedEmbedding = serializeEmbedding(embedding);
     const argTemplatesJson = argTemplates
       ? serializeArgTemplates(argTemplates)
       : null;
     const schemaVersionsJson = schemaVersions
       ? JSON.stringify(schemaVersions)
       : null;
+
+    // Serialize embedding only if embeddings are enabled
+    let serializedEmbedding = "";
+    if (ENABLE_EMBEDDINGS) {
+      serializedEmbedding = serializeEmbedding(embedding);
+    } else {
+      // If embeddings disabled, store empty embedding (backward compatible)
+      serializedEmbedding = JSON.stringify([]);
+    }
 
     // Verificar si ya existe una secuencia idéntica
     const existing = this.db
@@ -478,8 +498,12 @@ export class ReflexMolecule implements IMolecule {
           existing.id,
         );
 
-      // HNSW does not support updates; rebuild from SQLite when its embedding changes.
-      if (existing.embedding !== serializedEmbedding && this.vectorIndex) {
+      // HNSW does not support updates; rebuild from SQLite when its embedding changes (only if embeddings enabled)
+      if (
+        ENABLE_EMBEDDINGS &&
+        existing.embedding !== serializedEmbedding &&
+        this.vectorIndex
+      ) {
         this.rebuildIndex();
       }
 
@@ -505,7 +529,11 @@ export class ReflexMolecule implements IMolecule {
       );
 
     const newId = result.lastInsertRowid as number;
-    this.insertIntoIndex(newId, embedding);
+
+    // Insert into vector index only if embeddings enabled
+    if (ENABLE_EMBEDDINGS) {
+      this.insertIntoIndex(newId, embedding);
+    }
 
     log.info({ sequence, id: newId }, "Nuevo reflex guardado");
     return newId;
@@ -557,11 +585,21 @@ export class ReflexMolecule implements IMolecule {
    * Uses HNSW vector index when available, falls back to linear scan.
    * Applies temporal decay and reliability boost for composite scoring.
    *
+   * If ENABLE_EMBEDDINGS=false, returns null (use loadAllReflexes for Jev-only routing).
+   *
    * @param embedding  - Vector del input actual
    * @param topK       - Máximo de candidatos a evaluar (default: 5)
-   * @returns El mejor match con su similitud y modo recomendado
+   * @returns El mejor match con su similitud y modo recomendado, o null si embeddings deshabilitados
    */
   findSimilar(embedding: Embedding, topK: number = 5): ReflexMatch | null {
+    // If embeddings are disabled, return null — use loadAllReflexes + Jev routing instead
+    if (!ENABLE_EMBEDDINGS) {
+      log.debug(
+        "Embeddings deshabilitados, skipping findSimilar (use loadAllReflexes + Jev)",
+      );
+      return null;
+    }
+
     const now = Date.now();
     let candidates: Array<{ id: number; similarity: number }>;
 

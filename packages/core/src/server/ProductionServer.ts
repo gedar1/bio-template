@@ -43,18 +43,25 @@ const log = createLogger("ProductionServer");
 async function main() {
   log.info("Iniciando BioCore en modo producción");
 
-  // 0. Auto-seed de reflexes si la BD está vacía
+  // 0. Auto-seed de reflexes SOLO si reflexes_atomic está vacía
   try {
     const reflexDb = new ReflexMolecule();
     await reflexDb.initialize();
-    if (reflexDb.list().length === 0) {
-      log.info("BD de reflexes vacía — ejecutando seed inicial...");
+
+    // Chequear reflexes_atomic (nueva tabla) en lugar de reflexes (legacy)
+    // reflexDb.list() lee de reflexes, así que verificamos directamente la BD
+    const atomicCount = reflexDb["db"]
+      .prepare("SELECT COUNT(*) as count FROM reflexes_atomic")
+      .get() as { count: number };
+
+    if (atomicCount.count === 0) {
+      log.info("reflexes_atomic vacía — ejecutando seed inicial...");
       const total = await seedReflexes(reflexDb);
       log.info({ total }, "Reflexes pre-cargados correctamente");
     } else {
       log.info(
-        { total: reflexDb.list().length },
-        "Reflexes ya presentes, omitiendo seed",
+        { total: atomicCount.count },
+        "reflexes_atomic ya presentes, omitiendo seed",
       );
     }
     await reflexDb.dispose();

@@ -56,7 +56,17 @@ El archivo indicado por `agentFile` debe explicar el rol, vocabulario, flujos y 
 
 Si el layout incluye un seed de dominio, define frases cortas y flujos de una sola intención. Activa únicamente las células necesarias (`memory`, `http`, `communication`, `filesystem`, etc.). Las moléculas genéricas del motor siguen siendo reutilizables y no deben copiar lógica entre sí.
 
-## 7. Prueba la extensión
+El merge de registry es parte del arranque: valida ambos JSON, conserva el `registry.json` core y agrega las entradas de `domain-registry.json`; los tipos duplicados se rechazan. Si una herramienta de dominio no aparece después de mutar, verifica el entrypoint MCP compilado:
+
+```env
+TENANT_PROFILE=domain
+BIOCORE_CELL_SERVER_PATH=C:/ruta/a/tu-proyecto/packages/core/dist/application-cell.js
+DATABASE_DIR=./data
+```
+
+`application-cell.js` importa `createApplicationComposition()` y registra los handlers MCP del dominio. El fallback `cells/CellServer.js` solo conoce las moléculas genéricas y no puede registrar esos handlers. Las BDs de negocio deben quedar aisladas en `DATABASE_DIR/tenants/{tenantId}.db`; no copies `data/`, `*.db` ni `.env` al template.
+
+Si `hnswlib-node` no tiene binding nativo compatible, ReflexMolecule usa búsqueda lineal. Si Transformers no puede cargar embeddings, la memoria semántica se desactiva de forma segura y el sistema sigue funcionando con rutas explícitas o LLM.
 
 Usa Vitest y recursos temporales para moléculas. Comprueba `name`/`version`, ejecuta `initialize()` y libera siempre con `dispose()`. No uses APIs externas ni credenciales reales en tests.
 
