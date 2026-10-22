@@ -1,4 +1,5 @@
 import { UnifiedCortex } from "../system/implementations/UnifiedCortex.js";
+import { ReflexOrchestrator } from "../system/ReflexOrchestrator.js";
 import {
   DEFAULT_LLM_PROVIDER_CONFIG,
   LLMProviderNameSchema,
@@ -26,6 +27,7 @@ import type {
   MultiIntentSequenceDetectionResult,
   SemanticRouteResultV3,
 } from "./types/semantic.js";
+import type { TenantDatabaseManager } from "../infrastructure/TenantDatabaseManager.js";
 
 const __dirname = getModuleDir(import.meta.url);
 
@@ -43,8 +45,10 @@ interface IntentDetectionResult {
 
 interface LLMVerificationResult {
   reflexId: number;
-  decision: "accept" | "reject";
+  decision: "accept" | "reject" | "escalate";
   reasoning: string;
+  applicability_score?: number;
+  security_check?: boolean;
 }
 // =========================================================================
 
@@ -134,6 +138,8 @@ export interface TenantInfo {
   lastActivity: number;
   /** When true, the session should reload its cell configuration on next request */
   needsReload: boolean;
+  /** Optional ReflexOrchestrator for multi-intent execution chains */
+  orchestrator?: ReflexOrchestrator;
 }
 
 /**
@@ -555,67 +561,232 @@ export class TenantManager {
   }
 
   /**
-   * Verifica con LLM si un reflex candidato resuelve el intent del usuario
+   * Verifica con TypeSafe (Score + Noul) si un reflex candidato resuelve el intent del usuario
    * @param userMessage - Entrada del usuario
-   * @param reflex - Reflex a verificar
-   * @param cortex - Instancia de Cortex para llamar LLM
-   * @returns Decisión (accept/reject) y razonamiento
+   * @param candidate - Reflex candidato a verificar
+   * @param cortex - Instancia de Cortex para llamar LLM como fallback
+   * @returns Decisión (accept/reject/escalate), razonamiento y scores
    */
   private async llmVerifyReflex(
     userMessage: string,
-    reflex: { id: number; task_summary: string; confidence: number },
+    candidate: { id: number; task_summary: string; confidence: number },
     cortex: UnifiedCortex,
   ): Promise<LLMVerificationResult> {
     try {
-      // Construcción de prompt: pregunta concisa si el reflex resuelve el intent
-      const verificationPrompt = `Responde SOLO con "accept" o "reject" sin explicación adicional. ¿La tarea "${reflex.task_summary}" resuelve la intención del usuario: "${userMessage}"?`;
+      // TypeSafe SDK: score + noul evaluation
+      const { TypeSafeClient, score, noul } = await import("@typesafe-ai/sdk");
 
-      // Llamar LLM a través de Cortex y extraer respuesta del historial
-      const beforeSize = cortex.getHistory().length;
-      await cortex.chat(verificationPrompt);
-      const messages = cortex.getHistory();
-      const assistantMsg = messages
-        .slice(beforeSize)
-        .filter((entry) => entry.role === "assistant")
-        .pop();
-
-      const response = assistantMsg?.content || "";
-
-      // Extraer decisión del response (primeras palabras)
-      const decision =
-        response.toLowerCase().includes("accept") ||
-        response.toLowerCase().includes("yes") ||
-        response.toLowerCase().startsWith("sí")
-          ? "accept"
-          : "reject";
-      const reasoning = response.substring(0, 150); // Limitar reasoning para logging
+      const client = new TypeSafeClient({
+        apiKey: process.env.TYPESAFE_API_KEY,
+        defaultModel: "jev-latest",
+        timeout: 10000,
+      });
 
       log.debug(
-        { reflexId: reflex.id, decision, reasoning },
-        "[Verification phase] LLM verification result",
+        { reflexId: candidate.id, taskSummary: candidate.task_summary },
+        "[Verification phase] Starting TypeSafe verification",
+      );
+
+      // Crear Score TypeSafe para aplicabilidad (array de criterios ordenados)
+      const applicabilityScore = score(
+        `How applicable is reflex "${candidate.task_summary}" to user request: "${userMessage}"?`,
+        [
+          "Not applicable - different domain",
+          "Partially applicable - might need adaptation",
+          "Clearly applicable - ready to execute",
+        ],
+      );
+
+      // Crear Noul TypeSafe para verificar restricciones de seguridad/compliance
+      const securityCheck = noul(
+        `Does executing reflex "${candidate.task_summary}" violate any security, compliance, or policy rule for this user request: "${userMessage}"?`,
+      );
+
+      // Ejecutar ambas evaluaciones en paralelo
+      log.debug(
+        { reflexId: candidate.id },
+        "[Verification phase] Submitting to TypeSafe (Score + Noul)",
+      );
+
+      const response = await client.systemOne({
+        state: userMessage,
+        questions: {
+          reflex_applicability: applicabilityScore,
+          reflex_security_check: securityCheck,
+        },
+      });
+
+      // Extraer scores con tipado seguro
+      const applicabilityResponse = response.answers.reflex_applicability as
+        | {
+            score?: number;
+            probability?: number;
+          }
+        | undefined;
+
+      const securityResponse = response.answers.reflex_security_check as
+        | {
+            answer?: string | boolean;
+            probability?: number;
+          }
+        | undefined;
+
+      const appScore = Math.round(
+        ((applicabilityResponse?.score || 0) / 2) * 100,
+      ); // score es 0-2 (3 niveles), convertir a 0-100
+      const securityConfidence = Math.round(
+        ((securityResponse?.probability || 0) * 100) as number,
+      );
+
+      // Extraer respuesta de seguridad
+      const hasSecurityViolation =
+        securityResponse?.answer === true ||
+        (typeof securityResponse?.answer === "string" &&
+          securityResponse.answer.toLowerCase().includes("yes"));
+
+      log.info(
+        {
+          reflexId: candidate.id,
+          applicability_score: appScore,
+          security_check_answer: hasSecurityViolation ? "YES" : "NO",
+          security_check_confidence: securityConfidence,
+        },
+        "[Verification phase] TypeSafe response received",
+      );
+
+      // Lógica de decisión basada en scores
+      let decision: "accept" | "reject" | "escalate";
+      let reasoning: string;
+
+      // Si security check detecta violación con confianza > 80%
+      if (hasSecurityViolation && securityConfidence > 80) {
+        decision = "reject";
+        reasoning = "Security/compliance violation detected";
+        log.info(
+          { reflexId: candidate.id },
+          "[Verification phase] Rejected due to security violation",
+        );
+      }
+      // Si aplicabilidad es clara (>= 70%)
+      else if (appScore >= 70) {
+        decision = "accept";
+        reasoning = "Clearly applicable";
+        log.info(
+          { reflexId: candidate.id },
+          "[Verification phase] Accepted - clearly applicable",
+        );
+      }
+      // Si aplicabilidad es parcial (40-70%)
+      else if (appScore >= 40) {
+        decision = "escalate";
+        reasoning = "Partial applicability, needs escalation";
+        log.info(
+          { reflexId: candidate.id },
+          "[Verification phase] Escalated - partial applicability",
+        );
+      }
+      // Si security check es ambiguo (~50%)
+      else if (
+        securityConfidence >= 40 &&
+        securityConfidence <= 60 &&
+        appScore < 40
+      ) {
+        decision = "escalate";
+        reasoning = "Security assessment ambiguous, applicability low";
+        log.info(
+          { reflexId: candidate.id },
+          "[Verification phase] Escalated - ambiguous security/applicability",
+        );
+      }
+      // Predeterminado: reject si nada aplica
+      else {
+        decision = "reject";
+        reasoning = "Low applicability score";
+        log.info(
+          { reflexId: candidate.id },
+          "[Verification phase] Rejected - low applicability",
+        );
+      }
+
+      // Logging completo con Pino
+      log.info(
+        {
+          reflexId: candidate.id,
+          applicability_score: appScore,
+          security_check_answer: hasSecurityViolation ? "YES" : "NO",
+          security_check_confidence: securityConfidence,
+          decision,
+          reasoning,
+        },
+        "[Verification phase] LLM verification decision",
       );
 
       return {
-        reflexId: reflex.id,
+        reflexId: candidate.id,
         decision,
         reasoning,
+        applicability_score: appScore,
+        security_check: hasSecurityViolation,
       };
     } catch (error: any) {
       log.warn(
-        { reflexId: reflex.id, error: error.message },
-        "[Verification phase] LLM verification failed, defaulting to reject",
+        {
+          reflexId: candidate.id,
+          error: error.message,
+        },
+        "[Verification phase] TypeSafe verification failed, using LLM fallback",
       );
-      return {
-        reflexId: reflex.id,
-        decision: "reject",
-        reasoning: `Verification failed: ${error.message}`,
-      };
+
+      // Fallback: usar LLM simple
+      try {
+        const verificationPrompt = `Responde SOLO con "accept" o "reject" sin explicación adicional. ¿La tarea "${candidate.task_summary}" resuelve la intención del usuario: "${userMessage}"?`;
+
+        const beforeSize = cortex.getHistory().length;
+        await cortex.chat(verificationPrompt);
+        const messages = cortex.getHistory();
+        const assistantMsg = messages
+          .slice(beforeSize)
+          .filter((entry) => entry.role === "assistant")
+          .pop();
+
+        const response = assistantMsg?.content || "";
+        const decision =
+          response.toLowerCase().includes("accept") ||
+          response.toLowerCase().includes("yes") ||
+          response.toLowerCase().startsWith("sí")
+            ? ("accept" as const)
+            : ("reject" as const);
+
+        log.info(
+          { reflexId: candidate.id, decision },
+          "[Verification phase] LLM fallback decision",
+        );
+
+        return {
+          reflexId: candidate.id,
+          decision,
+          reasoning: response.substring(0, 150),
+        };
+      } catch (fallbackError: any) {
+        log.error(
+          { reflexId: candidate.id, error: fallbackError.message },
+          "[Verification phase] Both TypeSafe and LLM fallback failed",
+        );
+
+        return {
+          reflexId: candidate.id,
+          decision: "reject",
+          reasoning: `Verification failed: ${error.message}`,
+        };
+      }
     }
   }
 
   /**
    * Detecta secuencias implícitas de multi-intent basadas en palabras clave
-   * y valida dependencies con Jev
+   * y valida dependencies con Jev o desde BD reflex_dependencies (si existe)
+   *
+   * Fallback: intenta leer reflex_dependencies (new), si tabla no existe → fallback a Jev evaluation
    *
    * @param userMessage - Mensaje del usuario
    * @param intents - Resultado de detección de intents
@@ -673,94 +844,164 @@ export class TenantManager {
         "[Dependency Resolution] Validating reflexes for dependencies",
       );
 
-      // Para cada par (reflexA, reflexB), preguntar si reflexA debe preceder a reflexB
-      for (let i = 0; i < allReflexes.length; i++) {
-        for (let j = 0; j < allReflexes.length; j++) {
-          if (i !== j) {
-            const reflexA = allReflexes[i];
-            const reflexB = allReflexes[j];
+      // Primero, intentar leer dependencias de BD (reflex_dependencies si existe)
+      let dbDependenciesLoaded = false;
+      let dependenciesFromDb: Map<
+        string,
+        { source_id: number; target_id: number }
+      > = new Map();
 
-            try {
-              const { TypeSafeClient, choice } =
-                await import("@typesafe-ai/sdk");
+      try {
+        const dbPath = process.env.DATABASE_PATH || "./biocore.db";
+        const Database = (await import("better-sqlite3")).default;
+        const db = new Database(dbPath);
 
-              const client = new TypeSafeClient({
-                apiKey: process.env.TYPESAFE_API_KEY,
-                defaultModel: "jev-latest",
-                timeout: 10000,
-              });
+        const reflexIds = allReflexes.map((r) => r.id);
 
-              // Preguntar si reflexA debe ejecutarse antes que reflexB
-              const dependencyQuestion = choice(
-                `Does "${reflexA.task_summary}" need to execute before "${reflexB.task_summary}"?`,
-                { yes: "yes", no: "no" },
-              );
+        // Intentar leer de reflex_dependencies
+        const depStmt = db.prepare(`
+          SELECT source_id, target_id, confidence, sequence_keyword
+          FROM reflex_dependencies
+          WHERE source_id IN (${reflexIds.join(",")})
+            AND target_id IN (${reflexIds.join(",")})
+          ORDER BY confidence DESC
+        `);
 
-              log.debug(
-                {
-                  sourceId: reflexA.id,
-                  targetId: reflexB.id,
-                  sourceTask: reflexA.task_summary,
-                  targetTask: reflexB.task_summary,
-                },
-                "[Dependency Resolution] Asking Jev about dependency",
-              );
+        const dbDeps = depStmt.all() as Array<{
+          source_id: number;
+          target_id: number;
+          confidence: number;
+          sequence_keyword: string;
+        }>;
 
-              const response = await client.systemOne({
-                state: userMessage,
-                questions: { dependency: dependencyQuestion },
-              });
+        for (const dep of dbDeps) {
+          dependencies.push({
+            source_id: dep.source_id,
+            target_id: dep.target_id,
+            confidence: dep.confidence,
+            sequence_keyword: dep.sequence_keyword,
+          });
 
-              // Validar respuesta de Jev con tipos específicos
-              const choiceResponse = response.answers.dependency as
-                | {
-                    confidence?: number;
-                    choice?: string;
-                  }
-                | undefined;
-              const confidence = Math.round(
-                (choiceResponse?.confidence || 0) * 100,
-              );
-              const answer = (choiceResponse?.choice || "").toLowerCase();
+          dependenciesFromDb.set(`${dep.source_id}-${dep.target_id}`, dep);
+        }
 
-              log.debug(
-                {
-                  sourceId: reflexA.id,
-                  targetId: reflexB.id,
-                  answer,
-                  confidence,
-                },
-                "[Dependency Resolution] Jev response received",
-              );
+        db.close();
 
-              // Si confianza > 80% y respuesta es "yes", agregar dependency
-              if (confidence > 80 && answer === "yes") {
-                dependencies.push({
-                  source_id: reflexA.id,
-                  target_id: reflexB.id,
-                  confidence,
-                  sequence_keyword: keywordFound,
+        if (dependencies.length > 0) {
+          dbDependenciesLoaded = true;
+          log.info(
+            { dependencyCount: dependencies.length },
+            "[Dependency Resolution] Loaded dependencies from reflex_dependencies table",
+          );
+        }
+      } catch (dbError: any) {
+        log.warn(
+          {
+            dbError: dbError.message,
+            fallback: "jev-evaluation",
+          },
+          "[Dependency Resolution] reflex_dependencies table not found or error reading, using Jev evaluation",
+        );
+      }
+
+      // Si no hay dependencias en BD, usar Jev evaluation
+      if (!dbDependenciesLoaded && process.env.TYPESAFE_API_KEY) {
+        log.warn(
+          {
+            reflexPairs: allReflexes.length * (allReflexes.length - 1),
+          },
+          "[Dependency Resolution] reflex_dependencies not found, using Jev evaluation",
+        );
+
+        // Para cada par (reflexA, reflexB), preguntar si reflexA debe preceder a reflexB
+        for (let i = 0; i < allReflexes.length; i++) {
+          for (let j = 0; j < allReflexes.length; j++) {
+            if (i !== j) {
+              const reflexA = allReflexes[i];
+              const reflexB = allReflexes[j];
+
+              try {
+                const { TypeSafeClient, choice } =
+                  await import("@typesafe-ai/sdk");
+
+                const client = new TypeSafeClient({
+                  apiKey: process.env.TYPESAFE_API_KEY,
+                  defaultModel: "jev-latest",
+                  timeout: 10000,
                 });
 
-                log.info(
+                // Preguntar si reflexA debe ejecutarse antes que reflexB
+                const dependencyQuestion = choice(
+                  `Does "${reflexA.task_summary}" need to execute before "${reflexB.task_summary}"?`,
+                  { yes: "yes", no: "no" },
+                );
+
+                log.debug(
                   {
                     sourceId: reflexA.id,
                     targetId: reflexB.id,
-                    confidence,
-                    keyword: keywordFound,
+                    sourceTask: reflexA.task_summary,
+                    targetTask: reflexB.task_summary,
                   },
-                  "[Dependency Resolution] Dependency detected",
+                  "[Dependency Resolution] Asking Jev about dependency",
+                );
+
+                const response = await client.systemOne({
+                  state: userMessage,
+                  questions: { dependency: dependencyQuestion },
+                });
+
+                // Validar respuesta de Jev con tipos específicos
+                const choiceResponse = response.answers.dependency as
+                  | {
+                      confidence?: number;
+                      choice?: string;
+                    }
+                  | undefined;
+                const confidence = Math.round(
+                  (choiceResponse?.confidence || 0) * 100,
+                );
+                const answer = (choiceResponse?.choice || "").toLowerCase();
+
+                log.debug(
+                  {
+                    sourceId: reflexA.id,
+                    targetId: reflexB.id,
+                    answer,
+                    confidence,
+                  },
+                  "[Dependency Resolution] Jev response received",
+                );
+
+                // Si confianza > 80% y respuesta es "yes", agregar dependency
+                if (confidence > 80 && answer === "yes") {
+                  dependencies.push({
+                    source_id: reflexA.id,
+                    target_id: reflexB.id,
+                    confidence,
+                    sequence_keyword: keywordFound,
+                  });
+
+                  log.info(
+                    {
+                      sourceId: reflexA.id,
+                      targetId: reflexB.id,
+                      confidence,
+                      keyword: keywordFound,
+                    },
+                    "[Dependency Resolution] Dependency detected",
+                  );
+                }
+              } catch (error: any) {
+                log.warn(
+                  {
+                    sourceId: reflexA.id,
+                    targetId: reflexB.id,
+                    error: error.message,
+                  },
+                  "[Dependency Resolution] Jev validation failed, skipping pair",
                 );
               }
-            } catch (error: any) {
-              log.warn(
-                {
-                  sourceId: reflexA.id,
-                  targetId: reflexB.id,
-                  error: error.message,
-                },
-                "[Dependency Resolution] Jev validation failed, skipping pair",
-              );
             }
           }
         }
@@ -1105,7 +1346,8 @@ export class TenantManager {
         tenant.cortex,
       );
       verificationResults[String(verified.reflexId)] = {
-        llm_decision: verified.decision,
+        llm_decision:
+          verified.decision === "escalate" ? "reject" : verified.decision,
         reasoning: verified.reasoning,
       };
 
@@ -1116,6 +1358,8 @@ export class TenantManager {
           (c) => c.id !== candidate.id,
         );
       }
+      // Si LLM rechaza o escalate, mantener en candidates
+      // (posible ejecución como fallback si no hay activated)
     }
 
     // top_match debe ser siempre del array activated, nunca de candidates
@@ -1263,6 +1507,7 @@ export class TenantManager {
 
   /**
    * Lists reflexes for semantic routing (id + task_summary)
+   * Fallback: tries reflexes_atomic (new), falls back to reflexes (legacy)
    */
   protected async listReflexesForSemanticRoute(
     tenantId: string,
@@ -1274,23 +1519,62 @@ export class TenantManager {
       const Database = (await import("better-sqlite3")).default;
       const db = new Database(dbPath);
 
-      // Query reflexes table for this tenant
-      const stmt = db.prepare(`
-        SELECT id, task_summary
-        FROM reflexes
-        ORDER BY success_count DESC, created_at DESC
-        LIMIT 150
-      `);
+      let reflexes: Array<{ id: number; task_summary: string }> = [];
+      let tableUsed: "reflexes_atomic" | "reflexes" = "reflexes";
 
-      const reflexes = stmt.all() as Array<{
-        id: number;
-        task_summary: string;
-      }>;
+      // Try reading from reflexes_atomic (new)
+      try {
+        const atomicStmt = db.prepare(`
+          SELECT id, task_summary
+          FROM reflexes_atomic
+          ORDER BY success_count DESC, created_at DESC
+          LIMIT 150
+        `);
+
+        reflexes = atomicStmt.all() as Array<{
+          id: number;
+          task_summary: string;
+        }>;
+
+        tableUsed = "reflexes_atomic";
+        log.info(
+          { tenantId, reflexCount: reflexes.length, tableUsed },
+          "Reading from reflexes_atomic (new schema)",
+        );
+      } catch (atomicError: any) {
+        // Fallback to legacy reflexes table
+        log.info(
+          {
+            tenantId,
+            atomicError: atomicError.message,
+            fallbackTable: "reflexes",
+          },
+          "reflexes_atomic table not found, falling back to reflexes (legacy)",
+        );
+
+        const legacyStmt = db.prepare(`
+          SELECT id, task_summary
+          FROM reflexes
+          ORDER BY success_count DESC, created_at DESC
+          LIMIT 150
+        `);
+
+        reflexes = legacyStmt.all() as Array<{
+          id: number;
+          task_summary: string;
+        }>;
+
+        tableUsed = "reflexes";
+        log.info(
+          { tenantId, reflexCount: reflexes.length, tableUsed },
+          "Reading from reflexes (legacy schema)",
+        );
+      }
 
       db.close();
 
       log.info(
-        { tenantId, reflexCount: reflexes.length },
+        { tenantId, reflexCount: reflexes.length, tableUsed },
         "Loaded reflexes for semantic route",
       );
 

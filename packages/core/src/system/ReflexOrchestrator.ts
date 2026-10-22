@@ -104,7 +104,8 @@ export class ReflexOrchestrator implements IReflexOrchestrator {
 
   /**
    * Resuelve el orden topológico de una cadena de reflexes.
-   * Lee BD, valida ciclos, retorna cadena ordenada por dependencias.
+   * Lee BD si existe reflex_dependencies, valida ciclos, retorna cadena ordenada por dependencias.
+   * Fallback: si tabla no existe → usar lógica topological sort basada en dependencias provided.
    */
   async resolveOrder(
     reflexes: ExecutionChainNode[],
@@ -115,11 +116,70 @@ export class ReflexOrchestrator implements IReflexOrchestrator {
       depCount: dependencies.size,
     });
 
+    // Primero, intentar cargar dependencias de reflex_dependencies desde BD (si existe)
+    let finalDependencies = dependencies;
+    try {
+      // Obtener ruta de BD del tenant
+      const tenantDbPath = this.db.getTenantDbPath(this.tenantId);
+
+      // Abrir conexión a BD del tenant
+      const Database = (await import("better-sqlite3")).default;
+      const db = new Database(tenantDbPath);
+
+      const reflexIds = reflexes.map((r) => r.id);
+      if (reflexIds.length === 0) {
+        db.close();
+        this.log.info("No reflexes to resolve, returning empty");
+        return reflexes;
+      }
+
+      // Intentar leer de reflex_dependencies
+      const depStmt = db.prepare(`
+        SELECT source_id, target_id, confidence
+        FROM reflex_dependencies
+        WHERE source_id IN (${reflexIds.join(",")})
+          AND target_id IN (${reflexIds.join(",")})
+        ORDER BY confidence DESC
+      `);
+
+      const dbDeps = depStmt.all() as Array<{
+        source_id: number;
+        target_id: number;
+        confidence: number;
+      }>;
+
+      db.close();
+
+      if (dbDeps.length > 0) {
+        // Construir mapa desde BD
+        finalDependencies = new Map<number, number[]>();
+        for (const dep of dbDeps) {
+          if (!finalDependencies.has(dep.source_id)) {
+            finalDependencies.set(dep.source_id, []);
+          }
+          finalDependencies.get(dep.source_id)!.push(dep.target_id);
+        }
+
+        this.log.info("Execution order: Using reflex_dependencies from BD", {
+          depCount: dbDeps.length,
+        });
+      }
+    } catch (dbError: any) {
+      this.log.warn(
+        "reflex_dependencies not found or error reading from BD, using provided dependencies",
+        {
+          error: dbError.message,
+          fallback: "provided dependencies",
+        },
+      );
+      // Continuar con dependencies provided (fallback)
+    }
+
     // Validar ciclos
     if (
       this.hasCycles(
         reflexes.map((r) => r.id),
-        dependencies,
+        finalDependencies,
       )
     ) {
       this.log.warn(
@@ -131,7 +191,7 @@ export class ReflexOrchestrator implements IReflexOrchestrator {
     // Topological sort
     const sortedIds = this.topologicalSort(
       reflexes.map((r) => r.id),
-      dependencies,
+      finalDependencies,
     );
 
     this.log.debug("Topological sort completed", { sortedIds });
