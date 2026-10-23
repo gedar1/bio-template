@@ -1,0 +1,336 @@
+{
+  "info": {
+    "name": "BioCore API",
+    "description": "BioCore Semantic Routing & Reflex Management",
+    "version": "1.0.0",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login (Get JWT)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"secret\": \"test-secret-dev\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/platform/auth/login",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "platform", "auth", "login"]
+            },
+            "description": "Obtener JWT token\n\n⚠️ EJECUTA ESTO PRIMERO\n\n1. Copia el token de la respuesta\n2. Pégalo en las variables globales: jwt_token\n3. Luego ejecuta los otros requests"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Semantic Routing",
+      "item": [
+        {
+          "name": "Route: Save to DB",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"default\",\n  \"user_message\": \"guardala en la bd\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/semantic_route",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "semantic_route"]
+            },
+            "description": "Test atomic reflex: Save to database\nExpected: ID 51, Confidence 85%+, Reliability high"
+          }
+        },
+        {
+          "name": "Route: Scrape URL",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"default\",\n  \"user_message\": \"scrapeá esta página\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/semantic_route",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "semantic_route"]
+            },
+            "description": "Test atomic reflex: Scrape URL\nExpected: ID 54, Confidence 85%+, Reliability high"
+          }
+        },
+        {
+          "name": "Route: Read File",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"default\",\n  \"user_message\": \"lee el archivo\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/semantic_route",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "semantic_route"]
+            },
+            "description": "Test atomic reflex: Read file\nExpected: ID 57, Confidence 85%+, Reliability high"
+          }
+        },
+        {
+          "name": "Route: HTTP GET",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"default\",\n  \"user_message\": \"llamá a esta API\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/semantic_route",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "semantic_route"]
+            },
+            "description": "Test atomic reflex: HTTP GET\nExpected: ID 38, Confidence 75%+, Reliability medium-high"
+          }
+        },
+        {
+          "name": "Route: Git Status",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"default\",\n  \"user_message\": \"muestra el estado de git\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/semantic_route",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "semantic_route"]
+            },
+            "description": "Test atomic reflex: Git status\nExpected: ID 14, Confidence 85%+, Reliability high"
+          }
+        },
+        {
+          "name": "Route: Send Email",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"default\",\n  \"user_message\": \"envía un email\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/semantic_route",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "semantic_route"]
+            },
+            "description": "Test atomic reflex: Send email\nExpected: ID 66, Confidence 80%+, Reliability high"
+          }
+        },
+        {
+          "name": "Route: Write File",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"default\",\n  \"user_message\": \"crea un archivo con este contenido\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/semantic_route",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "semantic_route"]
+            },
+            "description": "Test atomic reflex: Write file\nExpected: ID 58, Confidence 85%+, Reliability high"
+          }
+        },
+        {
+          "name": "Route: Commit Git",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"default\",\n  \"user_message\": \"hazme commit\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/semantic_route",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "semantic_route"]
+            },
+            "description": "Test atomic reflex: Git commit\nExpected: ID 10, Confidence 85%+, Reliability high"
+          }
+        },
+        {
+          "name": "Route: System Info",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"default\",\n  \"user_message\": \"info del sistema\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/semantic_route",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "semantic_route"]
+            },
+            "description": "Test atomic reflex: System info\nExpected: ID 73, Confidence 85%+, Reliability high"
+          }
+        },
+        {
+          "name": "Route: Ambiguous (no match)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"default\",\n  \"user_message\": \"xyz algo muy raro que no coincide\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/semantic_route",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "semantic_route"]
+            },
+            "description": "Test low confidence case\nExpected: escalate_to_llm = true, Confidence < 50%"
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "jwt_token",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}

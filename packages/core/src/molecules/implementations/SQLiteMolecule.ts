@@ -21,7 +21,7 @@ export class SQLiteMolecule implements IDatabase {
   private db: Database.Database | null = null;
   readonly dbPath: string;
 
-  constructor(dbPath: string = "./biocore.db") {
+  constructor(dbPath: string = "./data/biocore.db") {
     this.dbPath = dbPath;
   }
 
@@ -31,13 +31,18 @@ export class SQLiteMolecule implements IDatabase {
       this.db.pragma("journal_mode = WAL");
       log.info({ path: this.dbPath }, "Conectado");
     } catch (error: any) {
-      throw new MoleculeError("sqlite", `Error de conexión: ${error.message}`, { path: this.dbPath });
+      throw new MoleculeError("sqlite", `Error de conexión: ${error.message}`, {
+        path: this.dbPath,
+      });
     }
   }
 
   async query(sql: string, params: any[] = []): Promise<any[]> {
     if (!this.db)
-      throw new MoleculeError("sqlite", "Base de datos no inicializada. Llama connect() primero.");
+      throw new MoleculeError(
+        "sqlite",
+        "Base de datos no inicializada. Llama connect() primero.",
+      );
 
     try {
       const stmt = this.db.prepare(sql);
@@ -52,7 +57,9 @@ export class SQLiteMolecule implements IDatabase {
         ];
       }
     } catch (error: any) {
-      throw new MoleculeError("sqlite", `Query error: ${error.message}`, { sql });
+      throw new MoleculeError("sqlite", `Query error: ${error.message}`, {
+        sql,
+      });
     }
   }
 
@@ -63,8 +70,7 @@ export class SQLiteMolecule implements IDatabase {
     const columnDefs = keys
       .map((k) => {
         const v = data[k];
-        const type =
-          typeof v === "number" ? "REAL" : "TEXT";
+        const type = typeof v === "number" ? "REAL" : "TEXT";
         return `${k} ${type}`;
       })
       .join(", ");

@@ -13,7 +13,9 @@ const log = createLogger("PersistentHistory");
 export class PersistentHistory implements MolecularGen {
   readonly db: Database.Database;
 
-  constructor(dbPath: string = process.env.DATABASE_PATH || "./biocore.db") {
+  constructor(
+    dbPath: string = process.env.DATABASE_PATH || "./data/biocore.db",
+  ) {
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.initTable();

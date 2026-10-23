@@ -14,7 +14,7 @@ const log = createLogger("LogBuffer");
 export class LogBuffer {
   private entries: LogEntry[] = [];
   private readonly maxSize: number;
-  private subscribers: Set<(entry: LogEntry) => void> = new Set();
+  private readonly subscribers: Set<(entry: LogEntry) => void> = new Set();
 
   constructor(maxSize: number = 1000) {
     this.maxSize = maxSize;

@@ -1,0 +1,153 @@
+{
+  "jev_system_1_evaluator": {
+    "purpose": "Rapid evaluation of queries against reflexes to provide tentative verdicts for BioCore task automation",
+    "mode": "System 1 - Fast, intuitive, pattern-matching based",
+    "version": "1.0"
+  },
+  "evaluation_schema": {
+    "cell_type": {
+      "type": "choice",
+      "instructions": "Which cell type (mutation) should handle this reflex?",
+      "options": [
+        "sensory - Web scraping, URL data extraction",
+        "filesystem - Read/write files",
+        "versioncontrol - Git operations",
+        "system - System info, monitoring",
+        "http - API calls, downloads",
+        "communication - Email, messaging",
+        "memory - Database operations",
+        "monitor - Combined monitoring operations"
+      ]
+    },
+    "operation_type": {
+      "type": "choice",
+      "instructions": "Primary operation category",
+      "options": ["read", "write", "delete", "execute", "query", "combine"]
+    },
+    "persistence_required": {
+      "type": "boolean",
+      "instructions": "Must data be stored in database? (Look for: guardala, guardalo, save, store, db_insert, almacenala)",
+      "keywords_true": ["guardala", "guardalo", "almacenala", "save to database", "db_insert", "store"],
+      "keywords_false": ["read", "show", "display", "query only", "read_file"]
+    },
+    "complexity_score": {
+      "type": "score",
+      "instructions": "Operation complexity",
+      "scale": [
+        "1-Single: One operation (read_file, system_info)",
+        "2-Chained: Two sequential operations (scrape->write)",
+        "3-Complex: Multiple mutations across cell types (scrape->memory->git)"
+      ]
+    },
+    "automation_readiness": {
+      "type": "boolean",
+      "instructions": "Is the instruction clear and actionable?",
+      "true": "Specific cell type, clear sequence, defined endpoint",
+      "false": "Vague, ambiguous, missing context"
+    },
+    "confidence_level": {
+      "type": "score",
+      "instructions": "JEV's confidence in the evaluation",
+      "scale": [
+        "Low: Ambiguous or multiple interpretations",
+        "Medium: Clear intent but some ambiguity in implementation",
+        "High: Explicit task and defined sequence"
+      ]
+    },
+    "tentative_verdict": {
+      "type": "choice",
+      "instructions": "What should happen with this reflex?",
+      "options": [
+        "execute - Ready for immediate automation",
+        "queue - Valid but needs user confirmation",
+        "review - Needs human approval before automation",
+        "reject - Unclear or not actionable"
+      ]
+    }
+  },
+  "sample_tests": {
+    "test_1_scrape_and_store": {
+      "task_summary": "scrapea esta URL y guardala en la base de datos",
+      "sequence": "mutate:sensory->scrape_url->mutate:memory->db_insert",
+      "expected_jev_output": {
+        "cell_type": "sensory",
+        "operation_type": "combine",
+        "persistence_required": true,
+        "complexity_score": "2-Chained",
+        "automation_readiness": true,
+        "confidence_level": "High",
+        "tentative_verdict": "execute"
+      }
+    },
+    "test_2_file_read_only": {
+      "task_summary": "lee el contenido del archivo",
+      "sequence": "mutate:filesystem->read_file",
+      "expected_jev_output": {
+        "cell_type": "filesystem",
+        "operation_type": "read",
+        "persistence_required": false,
+        "complexity_score": "1-Single",
+        "automation_readiness": false,
+        "confidence_level": "Low",
+        "tentative_verdict": "review"
+      },
+      "reasoning": "Missing file path - cannot execute without additional context"
+    },
+    "test_3_git_workflow": {
+      "task_summary": "haz commit y push de los cambios",
+      "sequence": "mutate:versioncontrol->git_add->git_commit->git_push",
+      "expected_jev_output": {
+        "cell_type": "versioncontrol",
+        "operation_type": "execute",
+        "persistence_required": false,
+        "complexity_score": "3-Complex",
+        "automation_readiness": true,
+        "confidence_level": "High",
+        "tentative_verdict": "execute"
+      }
+    },
+    "test_4_ambiguous_request": {
+      "task_summary": "muestra los datos",
+      "sequence": null,
+      "expected_jev_output": {
+        "cell_type": null,
+        "operation_type": "read",
+        "persistence_required": false,
+        "complexity_score": "1-Single",
+        "automation_readiness": false,
+        "confidence_level": "Low",
+        "tentative_verdict": "reject"
+      },
+      "reasoning": "Source is ambiguous - file? database? Could be filesystem->read_file OR memory->db_query. Needs clarification."
+    }
+  },
+  "jev_reasoning_example": {
+    "input_query": "scrapea esta URL y guardala en la base de datos",
+    "matching_reflexes": ["1", "2", "3"],
+    "jev_thinking": {
+      "step_1": "User wants to 'scrapea' (scrape) + 'guardala' (store it)",
+      "step_2": "Keywords: URL extraction + database storage = sensory + memory cells",
+      "step_3": "Sequence pattern matches: scrape_url -> db_insert",
+      "step_4": "Automation ready? Yes - explicit and complete",
+      "step_5": "Confidence? High - clear pattern match",
+      "conclusion": "EXECUTE - Perfect match with reflex pattern"
+    },
+    "output_verdict": {
+      "cell_type": "sensory",
+      "operation_type": "combine",
+      "persistence_required": true,
+      "complexity_score": "2-Chained",
+      "automation_readiness": true,
+      "confidence_level": "High",
+      "tentative_verdict": "execute",
+      "reflex_ids": ["1", "2", "3"],
+      "best_reflex": "1"
+    }
+  },
+  "playground_instructions": {
+    "1_copy_schema": "Copy this entire JSON to the Anthropic Playground",
+    "2_create_system_prompt": "Set a system prompt for JEV that includes the evaluation_schema",
+    "3_test_queries": "Send queries from sample_tests and verify jev_system_1_evaluator outputs match expected",
+    "4_validate": "Ensure JEV evaluates based on task_summary + sequence keywords and pattern matching"
+  }
+}
