@@ -175,6 +175,7 @@ describe("createApplicationComposition", () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual([
       "stimulate_differentiation",
+      "execute_detected_chain",
       "create_record",
       "get_record",
       "list_records",

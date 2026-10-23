@@ -209,6 +209,60 @@ export class CellServer implements ICell {
         };
       },
     );
+
+    // PASO 8-9: Register execute_detected_chain tool
+    this.server.registerTool(
+      "execute_detected_chain",
+      {
+        description:
+          "Ejecuta una cadena de herramientas detectada por Jev en secuencia",
+        inputSchema: {
+          chain: z
+            .array(z.string())
+            .describe(
+              "Array de nombres de herramientas a ejecutar (ej: ['scrape_url', 'database_insert'])",
+            ),
+          userMessage: z
+            .string()
+            .describe(
+              "Mensaje original del usuario para interpolación de parámetros",
+            ),
+          chainId: z
+            .string()
+            .describe("ID único de la cadena para trazabilidad"),
+        },
+      },
+      async ({ chain, userMessage, chainId }) => {
+        try {
+          await this.executeDetectedChain(
+            chain,
+            userMessage,
+            this.tenantId,
+            chainId,
+          );
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Cadena ${chainId} ejecutada exitosamente: ${chain.join(" → ")}`,
+              },
+            ],
+          };
+        } catch (error: unknown) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error ejecutando cadena: ${message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+    );
   }
 
   /**
@@ -1064,6 +1118,211 @@ export class CellServer implements ICell {
   /** Libera los recursos de la mutación actual. */
   async dispose(): Promise<void> {
     await this.disposeMolecules();
+  }
+
+  /**
+   * PASO 8-9: Ejecuta una cadena detectada por Jev y guarda el reflex
+   * @param chain - Nombres de herramientas a ejecutar
+   * @param userMessage - Mensaje original del usuario
+   * @param tenantId - ID del tenant
+   * @param chainId - ID único de la cadena
+   */
+  async executeDetectedChain(
+    chain: string[],
+    userMessage: string,
+    tenantId: string,
+    chainId: string,
+  ): Promise<void> {
+    const { ExecutionChainRunner } =
+      await import("../atoms/executionChainRunner.js");
+
+    log.info(
+      {
+        chainId,
+        tenantId,
+        chain: chain.join(" → "),
+      },
+      "PASO 8: Starting execution of detected chain",
+    );
+
+    try {
+      // Crear accessor que usa las moléculas disponibles en CellServer
+      const moleculeAccessor = {
+        callTool: async (
+          toolName: string,
+          inputs: Record<string, unknown>,
+        ): Promise<unknown> => {
+          // Mapeo de herramientas a métodos de moléculas
+          if (toolName === "scrape_url" && this.scraper) {
+            const url = inputs.url as string;
+            return await this.scraper.scrape(url, {});
+          }
+
+          if (toolName === "database_insert" && this.database) {
+            const table = inputs.table as string;
+            const data = inputs.data as Record<string, unknown>;
+            return await (this.database as any).insert(table, data);
+          }
+
+          if (toolName === "database_find" && this.database) {
+            const table = inputs.table as string;
+            const filter = inputs.filter as Record<string, unknown>;
+            return await (this.database as any).find(table, filter);
+          }
+
+          if (toolName === "database_update" && this.database) {
+            const table = inputs.table as string;
+            const id = inputs.id as number;
+            const updates = inputs.updates as Record<string, unknown>;
+            return await (this.database as any).update(table, id, updates);
+          }
+
+          if (toolName === "database_delete" && this.database) {
+            const table = inputs.table as string;
+            const id = inputs.id as number;
+            return await (this.database as any).delete(table, id);
+          }
+
+          if (toolName === "read_file" && this.filesystem) {
+            const path = inputs.path as string;
+            return await (this.filesystem as any).read(path);
+          }
+
+          if (toolName === "write_file" && this.filesystem) {
+            const path = inputs.path as string;
+            const content = inputs.content as string;
+            return await (this.filesystem as any).write(path, content);
+          }
+
+          if (toolName === "send_email" && this.gmail) {
+            const to = inputs.to as string;
+            const subject = inputs.subject as string;
+            const body = inputs.body as string;
+            return await (this.gmail as any).send(to, subject, body);
+          }
+
+          if (toolName === "git_commit" && this.git) {
+            const message = inputs.message as string;
+            return await (this.git as any).commit(message);
+          }
+
+          if (toolName === "git_push" && this.git) {
+            return await (this.git as any).push();
+          }
+
+          if (toolName === "http_get" && this.http) {
+            const url = inputs.url as string;
+            return await (this.http as any).get(url);
+          }
+
+          if (toolName === "http_post" && this.http) {
+            const url = inputs.url as string;
+            const data = inputs.data as Record<string, unknown>;
+            return await (this.http as any).post(url, data);
+          }
+
+          // Herramienta no encontrada
+          throw new Error(
+            `Tool '${toolName}' not available in current cell state`,
+          );
+        },
+      };
+
+      // Crear y ejecutar el runner
+      const runner = new ExecutionChainRunner(moleculeAccessor);
+      const context = {
+        chainId,
+        userMessage,
+        tenantId,
+        steps: [],
+        currentStepIndex: 0,
+        intermediateOutputs: {},
+      };
+
+      const result = await runner.executeChain(chain, context);
+
+      log.info(
+        {
+          chainId,
+          tenantId,
+          success: result.success,
+          totalSteps: result.steps.length,
+          executionTimeMs: result.executionTimeMs,
+          steps: result.steps.map((s: any) => ({
+            tool: s.toolName,
+            success: s.success,
+            timeMs: s.executionTimeMs,
+          })),
+        },
+        "PASO 8: Chain execution completed",
+      );
+
+      // PASO 9: Guardar reflex si la ejecución fue exitosa
+      if (result.success) {
+        try {
+          // Acceder a ReflexMolecule para guardar cadena como reflex
+          const { ReflexMolecule } =
+            await import("../molecules/ReflexMolecule.js");
+          const reflexMolecule = new ReflexMolecule();
+          await reflexMolecule.initialize();
+
+          // Crear ReflexStep array con encadenamiento de outputs
+          const reflexSteps = chain.map((action: string, index: number) => ({
+            action,
+            paramKeys: undefined,
+            // Chain output from step N to step N+1 input
+            chainOutputTo: index < chain.length - 1 ? "data" : undefined,
+          }));
+
+          // Crear embedding (usando mensaje del usuario)
+          const { computeEmbedding } = await import("../atoms/embeddings.js");
+          const embedding = await computeEmbedding(userMessage);
+
+          // Guardar reflex
+          reflexMolecule.save(
+            `[${chain.join(" → ")}]`, // taskSummary
+            reflexSteps, // steps
+            embedding, // embedding
+            undefined, // argTemplates
+            { jev: "1.0" }, // schemaVersions
+          );
+
+          await reflexMolecule.dispose();
+
+          log.info(
+            {
+              chainId,
+              tenantId,
+              chain: chain.join(" → "),
+            },
+            "PASO 9: Reflex saved to data/biocore.db",
+          );
+        } catch (reflexError: unknown) {
+          const message =
+            reflexError instanceof Error
+              ? reflexError.message
+              : String(reflexError);
+          log.warn(
+            {
+              chainId,
+              tenantId,
+              error: message,
+            },
+            "PASO 9: Failed to save reflex (non-blocking)",
+          );
+        }
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error(
+        {
+          chainId,
+          tenantId,
+          error: message,
+        },
+        "Chain execution failed",
+      );
+    }
   }
 
   /**

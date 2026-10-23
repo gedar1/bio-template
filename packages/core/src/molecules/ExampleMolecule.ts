@@ -76,7 +76,9 @@ export class ExampleMolecule implements IMolecule {
   private db!: Database.Database;
   private readonly dbPath: string;
 
-  constructor(dbPath: string = process.env.DATABASE_PATH ?? "./biocore.db") {
+  constructor(
+    dbPath: string = process.env.DATABASE_PATH ?? "./data/biocore.db",
+  ) {
     this.dbPath = dbPath;
   }
 

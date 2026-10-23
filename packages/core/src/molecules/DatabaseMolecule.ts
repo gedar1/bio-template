@@ -22,7 +22,9 @@ export class DatabaseMolecule {
 
     switch (dbType.toLowerCase()) {
       case "sqlite":
-        return new SQLiteMolecule(process.env.DATABASE_PATH || "./biocore.db");
+        return new SQLiteMolecule(
+          process.env.DATABASE_PATH || "./data/biocore.db",
+        );
 
       case "postgres":
         throw new MoleculeError("postgres", "PostgreSQL no implementado aún.");

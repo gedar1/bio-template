@@ -123,11 +123,62 @@ export interface CircuitBreakerSnapshot {
 }
 
 class TenantOrganism extends BaseOrganisms {
+  private detectedChain: string[] = [];
+  private chainUserMessage: string = "";
+  private chainId: string = "";
+
   constructor(tenantId: string, allowedCells?: string[]) {
     super(`Tenant-${tenantId}`, allowedCells);
   }
+
   async process(intention: any): Promise<any> {
     return intention;
+  }
+
+  /**
+   * Establece la cadena detectada para ejecutar en la célula
+   */
+  setDetectedChain(
+    chain: string[],
+    userMessage: string,
+    chainId: string,
+  ): void {
+    this.detectedChain = chain;
+    this.chainUserMessage = userMessage;
+    this.chainId = chainId;
+  }
+
+  /**
+   * Ejecuta la cadena detectada en la célula
+   */
+  async executeDetectedChain(): Promise<void> {
+    if (!this.detectedChain.length) return;
+
+    try {
+      // Invocar la herramienta especial execute_detected_chain en la célula
+      const result = await this.callTool("execute_detected_chain", {
+        chain: this.detectedChain,
+        userMessage: this.chainUserMessage,
+        chainId: this.chainId,
+      });
+
+      log.info(
+        {
+          chainId: this.chainId,
+          result,
+        },
+        "Chain executed successfully via organism",
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error(
+        {
+          chainId: this.chainId,
+          error: message,
+        },
+        "Failed to execute chain via organism",
+      );
+    }
   }
 }
 
@@ -141,6 +192,8 @@ export interface TenantInfo {
   needsReload: boolean;
   /** Optional ReflexOrchestrator for multi-intent execution chains */
   orchestrator?: ReflexOrchestrator;
+  /** Reference to tenant organism for PASO 8-9 chain execution */
+  organism?: TenantOrganism;
 }
 
 /**
@@ -231,20 +284,21 @@ export class TenantManager {
       composedProfiles[profile] || tenantProfiles.profiles[profile];
     const allowedCells = profileConfig?.allowedCells;
 
-    cortex.registerOrganism(new TenantOrganism(tenantId, allowedCells));
+    const organism = new TenantOrganism(tenantId, allowedCells);
+    cortex.registerOrganism(organism);
     await cortex.init();
 
     // Inyectar contexto del agente de dominio desde archivo .md
-    // if (profileConfig?.agentFile) {
-    //   const agentPrompt = this.loadAgentFile(profileConfig.agentFile);
-    //   if (agentPrompt) {
-    //     cortex.addHistoryMessage(cortex.getSessionId(), {
-    //       role: "system",
-    //       content: agentPrompt,
-    //       timestamp: Date.now(),
-    //     });
-    //   }
-    // }
+    if (profileConfig?.agentFile) {
+      const agentPrompt = this.loadAgentFile(profileConfig.agentFile);
+      if (agentPrompt) {
+        cortex.addHistoryMessage(cortex.getSessionId(), {
+          role: "system",
+          content: agentPrompt,
+          timestamp: Date.now(),
+        });
+      }
+    }
 
     const tenant: TenantInfo = {
       id: tenantId,
@@ -253,6 +307,7 @@ export class TenantManager {
       createdAt: Date.now(),
       lastActivity: Date.now(),
       needsReload: false,
+      organism,
     };
 
     this.tenants.set(tenantId, tenant);
@@ -480,33 +535,33 @@ export class TenantManager {
   }
 
   /** Carga el archivo .md del agente de dominio */
-  // private loadAgentFile(filename: string): string | null {
-  //   const paths = [
-  //     join(__dirname, "../", filename),
-  //     join(__dirname, "../../src", filename),
-  //     join(process.cwd(), "packages/core/src", filename),
-  //     join(__dirname, "../config/agents", filename),
-  //     join(__dirname, "../../config/agents", filename),
-  //     join(process.cwd(), "packages/core/dist/config/agents", filename),
-  //     join(process.cwd(), "packages/core/src/config/agents", filename),
-  //     join(process.cwd(), "packages/restaurant/src/config/agents", filename),
-  //     join(process.cwd(), "src/biocore/config/agents", filename),
-  //     join(process.cwd(), "dist/biocore/config/agents", filename),
-  //   ];
+  private loadAgentFile(filename: string): string | null {
+    const paths = [
+      join(__dirname, "../", filename),
+      join(__dirname, "../../src", filename),
+      join(process.cwd(), "packages/core/src", filename),
+      join(__dirname, "../config/agents", filename),
+      join(__dirname, "../../config/agents", filename),
+      join(process.cwd(), "packages/core/dist/config/agents", filename),
+      join(process.cwd(), "packages/core/src/config/agents", filename),
+      join(process.cwd(), "packages/restaurant/src/config/agents", filename),
+      join(process.cwd(), "src/biocore/config/agents", filename),
+      join(process.cwd(), "dist/biocore/config/agents", filename),
+    ];
 
-  //   for (const p of paths) {
-  //     try {
-  //       const content = readFileSync(p, "utf-8");
-  //       log.debug({ file: filename, path: p }, "Agent file cargado");
-  //       return content;
-  //     } catch {
-  //       // intentar siguiente path
-  //     }
-  //   }
+    for (const p of paths) {
+      try {
+        const content = readFileSync(p, "utf-8");
+        log.debug({ file: filename, path: p }, "Agent file cargado");
+        return content;
+      } catch {
+        // intentar siguiente path
+      }
+    }
 
-  //   log.warn({ file: filename }, "Agent file no encontrado");
-  //   return null;
-  // }
+    log.warn({ file: filename }, "Agent file no encontrado");
+    return null;
+  }
 
   get size(): number {
     return this.tenants.size;
@@ -522,7 +577,7 @@ export class TenantManager {
     reflexId: number,
   ): Promise<number[]> {
     try {
-      const dbPath = process.env.DATABASE_PATH || "./biocore.db";
+      const dbPath = process.env.DATABASE_PATH || "./data/biocore.db";
       const Database = (await import("better-sqlite3")).default;
       const db = new Database(dbPath);
 
@@ -901,7 +956,7 @@ export class TenantManager {
       > = new Map();
 
       try {
-        const dbPath = process.env.DATABASE_PATH || "./biocore.db";
+        const dbPath = process.env.DATABASE_PATH || "./data/biocore.db";
         const Database = (await import("better-sqlite3")).default;
         const db = new Database(dbPath);
 
@@ -1422,7 +1477,7 @@ export class TenantManager {
 
     // escalate_to_llm si: low reliability O multi-intent detectado
     const escalateToLLM =
-      (topMatch && topMatch.reliability === "low") || multiIntentDetected;
+      topMatch?.reliability === "low" || multiIntentDetected;
 
     // ============= Fase 3: Multi-Intent Composition =============
     let executionChain: ExecutionChainNode[] = [];
@@ -1564,7 +1619,7 @@ export class TenantManager {
     tenantId: string,
   ): Promise<Array<{ id: number; task_summary: string }>> {
     try {
-      const dbPath = process.env.DATABASE_PATH || "./biocore.db";
+      const dbPath = process.env.DATABASE_PATH || "./data/biocore.db";
       log.info({ dbPath }, "Opening DB for semantic route");
 
       const Database = (await import("better-sqlite3")).default;
@@ -1718,6 +1773,16 @@ export class TenantManager {
               },
               "Jev detected execution chain",
             );
+
+            // PASO 8: Execute the detected chain
+            this.executeDetectedChain(
+              tenant.id,
+              chainTools,
+              userMessage,
+              jSelection.confidence,
+              tenant,
+            );
+
             return executionChain;
           }
         }
@@ -2081,6 +2146,63 @@ export class TenantManager {
     );
 
     return evaluations.slice(0, 10); // Return top 10
+  }
+
+  /**
+   * PASO 8: Execute a chain of tools detected by Jev
+   * Runs tools sequentially, passing outputs to next step
+   */
+  private executeDetectedChain(
+    tenantId: string,
+    chainTools: string[],
+    userMessage: string,
+    jevConfidence: number,
+    tenant: TenantInfo,
+  ): void {
+    const chainId = `chain-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+    log.info(
+      {
+        chainId,
+        tenantId,
+        chain: chainTools.join(" → "),
+        jevConfidence,
+      },
+      "PASO 7-8: Jev detected tool chain (routing to organism for execution)",
+    );
+
+    // Set detected chain in organism for execution
+    if (tenant.organism) {
+      tenant.organism.setDetectedChain(chainTools, userMessage, chainId);
+
+      // Execute asynchronously (fire-and-forget) to avoid blocking response
+      tenant.organism.executeDetectedChain().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        log.error(
+          {
+            chainId,
+            tenantId,
+            error: message,
+          },
+          "Organism failed to execute detected chain",
+        );
+      });
+
+      log.debug(
+        {
+          chainId,
+          tenantId,
+          chain: chainTools,
+          userMessage,
+        },
+        "PASO 7: Chain routed to organism for asynchronous execution",
+      );
+    } else {
+      log.warn(
+        { tenantId, chainId },
+        "Organism not available for chain execution",
+      );
+    }
   }
 }
 

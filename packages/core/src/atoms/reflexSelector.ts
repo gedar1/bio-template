@@ -95,14 +95,6 @@ export async function jevEvaluateAll(
       },
     };
 
-    console.log("\nFULL REQUEST FOR PLAYGROUND:");
-    console.log(JSON.stringify(requestStructure, null, 2));
-
-    // Also show the exact toolsCriteria that will be sent
-    console.log("\nTOOLS CRITERIA (sorted keys):");
-    console.log(JSON.stringify(Object.keys(toolsCriteria).sort(), null, 2));
-    console.log("===========================\n");
-
     // Execute 3 parallelized questions exactly as in playground payload
     const result = await client.systemOne({
       state: message,

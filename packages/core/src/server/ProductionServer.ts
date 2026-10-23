@@ -110,7 +110,7 @@ async function main() {
 
   // Inicializar ReflexMolecule persistente para las rutas del dashboard
   const reflexMolecule = new ReflexMolecule(
-    process.env.DATABASE_PATH || "./biocore.db",
+    process.env.DATABASE_PATH || "./data/biocore.db",
     perfMonitor,
   );
   await reflexMolecule.initialize();

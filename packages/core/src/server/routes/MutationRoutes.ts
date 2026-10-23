@@ -14,7 +14,7 @@ const log = createLogger("MutationRoutes");
 export function setupMutationRoutes(
   health: HealthServer,
   tenantManager: TenantManager,
-  dbPath: string = process.env.DATABASE_PATH || "./biocore.db",
+  dbPath: string = process.env.DATABASE_PATH || "./data/biocore.db",
 ): void {
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
