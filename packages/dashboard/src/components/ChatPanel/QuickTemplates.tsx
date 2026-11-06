@@ -21,22 +21,12 @@ import { useApi, authHeaders } from "../../hooks/useApi";
 import { useProfile } from "../../context/ProfileContext";
 import { StepIndicator } from "../StepIndicator";
 import type { TaskTemplate, TemplateParameter } from "../../types/dashboard";
+import type { TemplateExecutionResult } from "../../types";
 
 interface QuickTemplatesProps {
   onTemplateResult: (result: TemplateExecutionResult) => void;
   disabled?: boolean;
   tenantId: string;
-}
-
-export interface TemplateExecutionResult {
-  templateName: string;
-  templateId: string;
-  category: string;
-  steps: string[];
-  args: Record<string, unknown>;
-  success: boolean;
-  results: string[];
-  error?: string;
 }
 
 const CATEGORY_ICONS: Record<

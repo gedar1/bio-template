@@ -10,7 +10,7 @@
       "type": "sensory_advanced",
       "description": "Scraping avanzado con paginación, extracción de texto y análisis profundo.",
       "parent": "sensory",
-      "tools": ["scrape_multiple_pages", "extract_text", "analyze_page"]
+      "tools": []
     },
     {
       "type": "memory",

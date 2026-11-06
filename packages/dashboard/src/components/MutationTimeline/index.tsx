@@ -4,10 +4,10 @@ import { useApi } from "../../hooks/useApi";
 import { filterMutations } from "../../utils/filterMutations";
 import type { MutationEvent } from "../../types/dashboard";
 import type {
-  MutationTimelineProps,
   MutationFilterState,
+  MutationTimelineProps,
   TimeRange,
-} from "./MutationTimeline.types";
+} from "../../types";
 
 const TIME_RANGES: { value: TimeRange; label: string }[] = [
   { value: "1h", label: "Última hora" },

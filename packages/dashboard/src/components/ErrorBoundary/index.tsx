@@ -1,8 +1,15 @@
 import React from "react";
-import type {
-  ErrorBoundaryProps,
-  ErrorBoundaryState,
-} from "./ErrorBoundary.types";
+
+export interface ErrorBoundaryProps {
+  /** Name of the panel (shown in error fallback) */
+  name: string;
+  children: React.ReactNode;
+}
+
+export interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
 
 /**
  * Error Boundary that catches render errors in child components

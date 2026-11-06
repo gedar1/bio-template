@@ -30,7 +30,7 @@ import {
   Wrench as WrenchIcon,
   type LucideIcon,
 } from "lucide-react";
-import type { ToolIconProps } from "./ToolIcon.types";
+import type { ToolIconProps } from "../../types";
 
 export const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   scrape_url: Download,

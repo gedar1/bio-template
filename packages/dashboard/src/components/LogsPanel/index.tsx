@@ -3,7 +3,7 @@ import { Play, Pause, Trash2 } from "lucide-react";
 import type { LogEntry, LogLevel } from "../../types/dashboard";
 import { filterLogEntries } from "../../utils/filterLogEntries";
 import { withApiKeyParam } from "../../hooks/useApi";
-import type { LogsPanelProps, LogFilterState } from "./LogsPanel.types";
+import type { LogFilterState, LogsPanelProps } from "../../types";
 
 const MAX_ENTRIES = 500;
 const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];

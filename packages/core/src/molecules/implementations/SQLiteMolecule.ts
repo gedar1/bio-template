@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { IDatabase } from "../interfaces/IDatabase.js";
 import { createLogger } from "../../config/logger.js";
 import { MoleculeError } from "../../errors.js";
+import { resolveDataPath } from "../../atoms/paths.js";
 
 const log = createLogger("SQLite");
 
@@ -21,7 +22,7 @@ export class SQLiteMolecule implements IDatabase {
   private db: Database.Database | null = null;
   readonly dbPath: string;
 
-  constructor(dbPath: string = "./data/biocore.db") {
+  constructor(dbPath: string = resolveDataPath("./data/biocore.db")) {
     this.dbPath = dbPath;
   }
 

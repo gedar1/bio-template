@@ -12,7 +12,7 @@ import { TemplateSelector } from "../TemplateSelector";
 import { Tooltip } from "../Tooltip";
 import type { TaskTemplate } from "../../types/dashboard";
 
-interface Task {
+export interface Task {
   id: string;
   name: string;
   intervalMs: number;
@@ -22,7 +22,7 @@ interface Task {
   errors: number;
 }
 
-interface SchedulerData {
+export interface SchedulerData {
   tasks: Task[];
   total: number;
 }

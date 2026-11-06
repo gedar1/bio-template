@@ -1,4 +1,4 @@
-import type { ActiveToolsListProps } from "./ActiveToolsList.types";
+import type { ActiveToolsListProps } from "../../types";
 import { useApi } from "../../hooks/useApi";
 import { Tooltip } from "../Tooltip";
 import { ToolIcon } from "../ToolIcon";

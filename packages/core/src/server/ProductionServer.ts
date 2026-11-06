@@ -22,7 +22,13 @@ import { TemplateStateStore } from "./TemplateStateStore.js";
 import { UnifiedCortex } from "../system/implementations/UnifiedCortex.js";
 import { loadApplicationRegistry } from "../config/mergeRegistry.js";
 import { isPlatformEnabled } from "./middleware/platformAuth.js";
-import { initializePlatformSchema } from "./services/platformSchema.js";
+import { resolveDataPath } from "../atoms/paths.js";
+import { buildTokenVerifier } from "./middleware/requestAccess.js";
+import {
+  ensureTenantRecord,
+  initializePlatformSchema,
+} from "./services/platformSchema.js";
+import { getSingleTenantId } from "../config/deploymentMode.js";
 import { TenantRegistryService } from "./services/TenantRegistryService.js";
 import { UsageMetricsCollector } from "./services/UsageMetricsCollector.js";
 import { HealthStatusCalculator } from "./services/HealthStatusCalculator.js";
@@ -110,7 +116,7 @@ async function main() {
 
   // Inicializar ReflexMolecule persistente para las rutas del dashboard
   const reflexMolecule = new ReflexMolecule(
-    process.env.DATABASE_PATH || "./data/biocore.db",
+    resolveDataPath(process.env.DATABASE_PATH || "./data/biocore.db"),
     perfMonitor,
   );
   await reflexMolecule.initialize();
@@ -127,13 +133,21 @@ async function main() {
 
   if (isPlatformEnabled()) {
     try {
-      const sharedDbPath =
-        process.env.DATABASE_PATH || "./data/biocore-shared.db";
+      const sharedDbPath = resolveDataPath(
+        process.env.DATABASE_PATH || "./data/biocore-shared.db",
+      );
       platformDb = new Database(sharedDbPath);
       platformDb.pragma("journal_mode = WAL");
 
       // Create platform tables if they don't exist
       initializePlatformSchema(platformDb);
+
+      // Las métricas del tenant por defecto necesitan su fila en platform_tenants.
+      ensureTenantRecord(
+        platformDb,
+        getSingleTenantId(),
+        process.env.TENANT_PROFILE || "dev",
+      );
 
       // Instantiate and initialize platform services
       platformRegistry = new TenantRegistryService();
@@ -189,7 +203,7 @@ async function main() {
 
   // Settings subsystem: TenantManager is authoritative for traffic config.
   const templateStateStore = new TemplateStateStore(
-    process.env.DATABASE_PATH || "./data/biocore-shared.db",
+    resolveDataPath(process.env.DATABASE_PATH || "./data/biocore-shared.db"),
   );
   const cortex = new UnifiedCortex({
     metrics: platformMetricsCollector,
@@ -205,6 +219,10 @@ async function main() {
   // Instantiate tenant authentication services when platform is available.
   let tenantAuthService: TenantAuthService | undefined;
   const loginRateLimiter = new LoginRateLimiter();
+
+  // La compuerta global acepta JWT válidos; cada ruta decide qué puede hacer.
+  // Se lee tenantAuthService al momento de la petición (puede ser undefined).
+  health.setTokenVerifier(buildTokenVerifier(() => tenantAuthService));
 
   if (platformRegistry) {
     tenantAuthService = new TenantAuthService(platformRegistry);

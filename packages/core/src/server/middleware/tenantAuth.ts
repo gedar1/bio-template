@@ -13,7 +13,7 @@ const log = createLogger("TenantAuth");
  */
 export interface TenantContext {
   tenant_id: string;
-  role: "super_admin" | "admin" | "operator" | "viewer";
+  role: "platform_owner" | "tenant_owner" | "operator" | "viewer";
   profile: string;
   auth_type: "tenant_jwt" | "platform_jwt" | "api_secret";
 }
@@ -161,8 +161,8 @@ function resolveTenantJwt(
 }
 
 /**
- * Resolve authentication for a Platform JWT (super_admin).
- * Returns cross-tenant context with super_admin role.
+ * Resolve authentication for a Platform JWT (platform_owner).
+ * Returns cross-tenant context with platform_owner role.
  */
 function resolvePlatformJwt(
   authHeader: string | undefined,
@@ -174,11 +174,11 @@ function resolvePlatformJwt(
     return result;
   }
 
-  log.debug("Authenticated via Platform JWT (super_admin)");
+  log.debug("Authenticated via Platform JWT (platform_owner)");
 
   return {
     tenant_id: "*",
-    role: "super_admin",
+    role: "platform_owner",
     profile: "all",
     auth_type: "platform_jwt",
   };
@@ -193,7 +193,7 @@ function resolveApiSecret(): TenantContext {
 
   return {
     tenant_id: "default",
-    role: "admin",
+    role: "platform_owner",
     profile: DEFAULT_PROFILE,
     auth_type: "api_secret",
   };
@@ -205,7 +205,7 @@ function resolveApiSecret(): TenantContext {
  * Validates that the authenticated tenant has access to the target resource.
  *
  * Rules:
- * - super_admin (Platform JWT, tenant_id = "*") can access any tenant's resources.
+ * - platform_owner (Platform JWT, tenant_id = "*") can access any tenant's resources.
  * - A tenant can only access resources belonging to their own tenant_id.
  * - Cross-tenant attempts are rejected with HTTP 403 and ACCESS_DENIED code.
  *
@@ -217,8 +217,8 @@ export function validateTenantAccess(
   authContext: TenantContext,
   targetTenantId: string,
 ): { error: string; code: string; status: 403 } | null {
-  // super_admin (Platform JWT) retains cross-tenant access
-  if (authContext.role === "super_admin") return null;
+  // platform_owner (Platform JWT) retains cross-tenant access
+  if (authContext.role === "platform_owner") return null;
 
   // API_SECRET auth with "default" tenant_id has unrestricted access (legacy/dev mode)
   if (authContext.auth_type === "api_secret") return null;

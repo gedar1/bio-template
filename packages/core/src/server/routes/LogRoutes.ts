@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { HealthServer } from "../HealthServer.js";
 import { LogBuffer } from "../LogBuffer.js";
 import { createLogger } from "../../config/logger.js";
+import { resolvePlatformAccess } from "../middleware/requestAccess.js";
 
 const log = createLogger("LogRoutes");
 
@@ -15,6 +16,11 @@ export function setupLogRoutes(
 ): void {
   // Endpoint para obtener logs recientes (polling fallback)
   health.registerData("logs", async (body?: Record<string, unknown>) => {
+    // Los logs son de todo el sistema: solo plataforma (API_SECRET o platform JWT)
+    const access = resolvePlatformAccess(body || {});
+    if (!access.ok) {
+      return { error: access.error, code: access.code, entries: [], total: 0 };
+    }
     const limit = (body?.limit as number) || 100;
     const entries = logBuffer.getRecent(limit);
     return {

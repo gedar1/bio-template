@@ -4,6 +4,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { createLogger } from "../../config/logger.js";
+import { resolveDataPath } from "../../atoms/paths.js";
 
 const log = createLogger("TenantRegistryService");
 
@@ -20,7 +21,7 @@ export const TenantProfileSchema = z.enum([
 ]);
 export type TenantProfileType = z.infer<typeof TenantProfileSchema>;
 
-export const TenantRecordSchema = z.object({
+const TenantRecordSchema = z.object({
   tenant_id: z
     .string()
     .min(1)
@@ -89,6 +90,23 @@ export type ProfileChangeCallback = (tenantId: string) => void;
  * Usa la tabla `platform_tenants` del schema compartido (creada por platformSchema.ts).
  * Al crear un tenant, inicializa un archivo de base de datos aislado en `data/tenants/{tenant_id}.db`.
  */
+/**
+ * Traducción del rol de clave al formato almacenado. La columna api_key_role
+ * tiene un CHECK con el valor histórico 'admin'; reconstruir la tabla no es
+ * seguro porque platform_metrics y platform_profile_changes la referencian.
+ * Por eso el valor se guarda como 'admin' y se expone como 'tenant_owner'.
+ */
+type StoredKeyRole = "viewer" | "operator" | "admin";
+type KeyRole = "viewer" | "operator" | "tenant_owner";
+
+function toStoredKeyRole(role: KeyRole): StoredKeyRole {
+  return role === "tenant_owner" ? "admin" : role;
+}
+
+function fromStoredKeyRole(role: StoredKeyRole): KeyRole {
+  return role === "admin" ? "tenant_owner" : role;
+}
+
 export class TenantRegistryService {
   private db: InstanceType<typeof DatabaseType> | null = null;
   private readonly tenantsDataDir: string;
@@ -96,7 +114,7 @@ export class TenantRegistryService {
 
   constructor(tenantsDataDir?: string) {
     this.tenantsDataDir =
-      tenantsDataDir ?? join(process.cwd(), "data", "tenants");
+      tenantsDataDir ?? resolveDataPath(join("data", "tenants"));
   }
 
   /**
@@ -430,7 +448,11 @@ export class TenantRegistryService {
   /**
    * Store the bcrypt hash of an API key for a tenant.
    */
-  setApiKeyHash(tenantId: string, hash: string): void {
+  setApiKeyHash(
+    tenantId: string,
+    hash: string,
+    maxRole: "viewer" | "operator" | "tenant_owner",
+  ): void {
     if (!this.db) {
       throw new Error(
         "TenantRegistryService not initialized — call initialize() first",
@@ -441,13 +463,13 @@ export class TenantRegistryService {
 
     const stmt = this.db.prepare(`
       UPDATE platform_tenants
-      SET api_key_hash = ?, updated_at = ?
+      SET api_key_hash = ?, api_key_role = ?, updated_at = ?
       WHERE tenant_id = ?
     `);
 
-    stmt.run(hash, now, tenantId);
+    stmt.run(hash, toStoredKeyRole(maxRole), now, tenantId);
 
-    log.info({ tenantId }, "API key hash actualizado");
+    log.info({ tenantId, maxRole }, "API key hash actualizado");
   }
 
   /**
@@ -485,6 +507,7 @@ export class TenantRegistryService {
   getActiveTenantsWithKeys(): Array<{
     tenant_id: string;
     api_key_hash: string;
+    api_key_role: "viewer" | "operator" | "tenant_owner";
     profile: string;
     status: string;
   }> {
@@ -495,7 +518,7 @@ export class TenantRegistryService {
     }
 
     const stmt = this.db.prepare(`
-      SELECT tenant_id, api_key_hash, profile, status
+      SELECT tenant_id, api_key_hash, api_key_role, profile, status
       FROM platform_tenants
       WHERE status = 'active' AND api_key_hash IS NOT NULL
     `);
@@ -503,11 +526,15 @@ export class TenantRegistryService {
     const rows = stmt.all() as Array<{
       tenant_id: string;
       api_key_hash: string;
+      api_key_role: StoredKeyRole;
       profile: string;
       status: string;
     }>;
 
-    return rows;
+    return rows.map((row) => ({
+      ...row,
+      api_key_role: fromStoredKeyRole(row.api_key_role),
+    }));
   }
 
   /**

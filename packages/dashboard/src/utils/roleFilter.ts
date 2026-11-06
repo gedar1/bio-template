@@ -1,14 +1,14 @@
 import type { UserRole } from "../types/dashboard";
 
 /**
- * Role hierarchy: viewer ⊆ operator ⊆ admin ⊆ super_admin
+ * Role hierarchy: viewer ⊆ operator ⊆ admin ⊆ platform_owner
  * Each role includes all permissions of lower roles.
  */
 const ROLE_LEVEL: Record<UserRole, number> = {
   viewer: 1,
   operator: 2,
-  admin: 3,
-  super_admin: 4,
+  tenant_owner: 3,
+  platform_owner: 4,
 };
 
 /**
@@ -16,12 +16,12 @@ const ROLE_LEVEL: Record<UserRole, number> = {
  * viewer sees: overview panels (health, perf)
  * operator adds: scheduler, activity, chat, tools (read-only)
  * admin adds: everything else
- * super_admin adds: platform management panels
+ * platform_owner adds: platform management panels
  */
 const ROLE_PANELS: Record<UserRole, Set<string>> = {
   viewer: new Set(["health", "perf"]),
   operator: new Set(["health", "perf", "scheduler", "activity", "chat"]),
-  admin: new Set([
+  tenant_owner: new Set([
     "health",
     "perf",
     "scheduler",
@@ -36,7 +36,7 @@ const ROLE_PANELS: Record<UserRole, Set<string>> = {
     "websocket",
     "settings",
   ]),
-  super_admin: new Set([
+  platform_owner: new Set([
     "health",
     "perf",
     "scheduler",
@@ -64,7 +64,7 @@ const ROLE_PANELS: Record<UserRole, Set<string>> = {
 const ROLE_ACTIONS: Record<UserRole, Set<string>> = {
   viewer: new Set(["view"]),
   operator: new Set(["view", "create-task", "send-chat"]),
-  admin: new Set([
+  tenant_owner: new Set([
     "view",
     "create-task",
     "send-chat",
@@ -74,7 +74,7 @@ const ROLE_ACTIONS: Record<UserRole, Set<string>> = {
     "broadcast-ws",
     "disconnect-ws",
   ]),
-  super_admin: new Set([
+  platform_owner: new Set([
     "view",
     "create-task",
     "send-chat",
@@ -145,7 +145,7 @@ export function getRoleLevel(role: UserRole): number {
  * Panels that are NEVER accessible to tenant-authenticated users,
  * regardless of their role within the tenant.
  * This is a belt-and-suspenders check: the role-based filtering already
- * excludes these (they're only in super_admin), but this makes the
+ * excludes these (they're only in platform_owner), but this makes the
  * tenant isolation explicit.
  */
 const TENANT_EXCLUDED_PANELS: Set<string> = new Set([

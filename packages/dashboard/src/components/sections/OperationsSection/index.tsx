@@ -1,9 +1,9 @@
-import type { OperationsSectionProps } from "./OperationsSection.types";
 import { ErrorBoundary } from "../../ErrorBoundary";
 import { RoleGuard } from "../../RoleGuard";
 import { SchedulerPanel } from "../../SchedulerPanel";
 import { ActivityPanel } from "../../ActivityPanel";
 import { ToolsPanel } from "../../ToolsPanel";
+import type { OperationsSectionProps } from "../../../types";
 
 export const OperationsSection: React.FC<OperationsSectionProps> = ({
   tenantId,

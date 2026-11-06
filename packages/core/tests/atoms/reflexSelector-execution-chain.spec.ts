@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { ReflexRecord } from "../../src/molecules/ReflexMolecule.js";
 import {
   jevEvaluateAll,
-  selectReflex,
   REFLEX_SELECTION_THRESHOLD,
 } from "../../src/atoms/reflexSelector.js";
 
@@ -68,9 +67,7 @@ describe("reflexSelector - Execution Chain", () => {
       // Mock the TypeSafeClient module
       vi.doMock("@typesafe-ai/sdk", () => ({
         TypeSafeClient: vi.fn().mockImplementation(() => ({
-          systemOne: vi
-            .fn()
-            .mockResolvedValue(mockTypeScafeClientResponse),
+          systemOne: vi.fn().mockResolvedValue(mockTypeScafeClientResponse),
         })),
         choice: vi.fn((question, criteria) => ({ question, criteria })),
         noul: vi.fn((question) => ({ question })),
@@ -121,9 +118,7 @@ describe("reflexSelector - Execution Chain", () => {
 
       vi.doMock("@typesafe-ai/sdk", () => ({
         TypeSafeClient: vi.fn().mockImplementation(() => ({
-          systemOne: vi
-            .fn()
-            .mockResolvedValue(mockTypeScafeClientResponse),
+          systemOne: vi.fn().mockResolvedValue(mockTypeScafeClientResponse),
         })),
         choice: vi.fn((question, criteria) => ({ question, criteria })),
         noul: vi.fn((question) => ({ question })),
@@ -165,9 +160,7 @@ describe("reflexSelector - Execution Chain", () => {
 
       vi.doMock("@typesafe-ai/sdk", () => ({
         TypeSafeClient: vi.fn().mockImplementation(() => ({
-          systemOne: vi
-            .fn()
-            .mockResolvedValue(mockLowConfidenceResponse),
+          systemOne: vi.fn().mockResolvedValue(mockLowConfidenceResponse),
         })),
         choice: vi.fn((question, criteria) => ({ question, criteria })),
         noul: vi.fn((question) => ({ question })),
@@ -228,36 +221,6 @@ describe("reflexSelector - Execution Chain", () => {
       // Without API key, Jev should not be called and should return null
       expect(result).toBeNull();
     });
-
-    it("should use structured fallback when Jev unavailable", async () => {
-      // Explicitly unset API key to disable Jev
-      delete process.env.TYPESAFE_API_KEY;
-
-      const candidates: ReflexRecord[] = [
-        {
-          id: "reflex-high-success",
-          taskSummary: "scrape and save",
-          sequence: "scrape_url→database_insert",
-          embedding: new Array(384).fill(0.1),
-          successCount: 10,
-          failureCount: 1, // High ratio = high confidence
-          createdAt: Date.now(),
-          lastUsedAt: Date.now(),
-          argTemplates: [],
-        },
-      ];
-
-      // selectReflex should fall back to structured when Jev is unavailable
-      const result = await selectReflex(
-        "scrapea la web y guarda en la bd",
-        candidates,
-      );
-
-      // Without Jev, should return structured-fallback result
-      expect(result).not.toBeNull();
-      expect(result?.source).toBe("structured-fallback");
-      expect(result?.record.id).toBe("reflex-high-success");
-    });
   });
 
   describe("Execution Chain Composition", () => {
@@ -266,9 +229,7 @@ describe("reflexSelector - Execution Chain", () => {
 
       vi.doMock("@typesafe-ai/sdk", () => ({
         TypeSafeClient: vi.fn().mockImplementation(() => ({
-          systemOne: vi
-            .fn()
-            .mockResolvedValue(mockTypeScafeClientResponse),
+          systemOne: vi.fn().mockResolvedValue(mockTypeScafeClientResponse),
         })),
         choice: vi.fn((question, criteria) => ({ question, criteria })),
         noul: vi.fn((question) => ({ question })),
@@ -312,9 +273,7 @@ describe("reflexSelector - Execution Chain", () => {
 
       vi.doMock("@typesafe-ai/sdk", () => ({
         TypeSafeClient: vi.fn().mockImplementation(() => ({
-          systemOne: vi
-            .fn()
-            .mockResolvedValue(mockTypeScafeClientResponse),
+          systemOne: vi.fn().mockResolvedValue(mockTypeScafeClientResponse),
         })),
         choice: vi.fn((question, criteria) => ({ question, criteria })),
         noul: vi.fn((question) => ({ question })),

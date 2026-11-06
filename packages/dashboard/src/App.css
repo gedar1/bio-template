@@ -10,9 +10,28 @@
     opacity: 1;
   }
 }
+@keyframes dot-pulse {
+  from {
+    box-shadow: 0 0 0 0 #ff5a1f3b;
+  }
+  to {
+    box-shadow: 0 0 0 16px #ff5a1f1f;
+  }
+}
 
 .animate-slide-in-right {
   animation: slide-in-right 0.3s ease-out;
+}
+
+.dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 40px 20px;
+  background: #ff5a1f;
+  animation: dot-pulse 0.8s cubic-bezier(0, 0, 0.35, 1) infinite;
 }
 
 /* ─── Section Navigation ──────────────────────────────────────────────────── */
@@ -199,6 +218,10 @@
     transform: perspective(2000px) rotateZ(300deg) rotateX(40deg) rotateY(39deg)
       scale(0.8);
   }
+}
+
+#header_char > g:nth-of-type(2) g rect {
+  fill: #ff5a1f;
 }
 
 #center {

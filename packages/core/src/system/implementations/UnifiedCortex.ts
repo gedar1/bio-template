@@ -39,6 +39,18 @@ import {
 import type { ILogger } from "../../config/ILogger.js";
 import type { IUsageMetricsSink } from "../interfaces/IUsageMetricsSink.js";
 import type { ITenantTokenLimitReader } from "../interfaces/ITenantTokenLimitReader.js";
+import {
+  CHAIN_MIN_SIMILARITY,
+  CHAIN_TABLE,
+  CREATE_CHAIN_TABLE_SQL,
+  PENDING_DISCARDED_WARNING,
+  SCRAPE_STORE_SEQUENCE,
+  URL_QUESTION,
+  extractUrl,
+  isScrapeStoreSequence,
+} from "../../atoms/chainExtraction.js";
+import { DefaultPendingChainStore } from "../strategies/DefaultPendingChainStore.js";
+import type { IPendingChainStore } from "../strategies/IPendingChainStore.js";
 
 const log = createLogger("UnifiedCortex");
 const MAX_ITERATIONS = 10;
@@ -55,6 +67,7 @@ export interface UnifiedCortexOptions extends OrchestratorOptions {
   readonly metrics?: IUsageMetricsSink;
   readonly tenantLimits?: ITenantTokenLimitReader;
   readonly singleProvider?: boolean;
+  readonly pendingChains?: IPendingChainStore;
 }
 
 interface StreamResult {
@@ -77,9 +90,12 @@ export class UnifiedCortex extends BaseOrchestrator {
   private providerConfig: LLMProviderConfig;
   private sessionActive = false;
   private pendingConfig: LLMProviderConfig | null = null;
+  private readonly pendingChains: IPendingChainStore;
 
   constructor(options: UnifiedCortexOptions = {}) {
     super(options);
+    this.pendingChains =
+      options.pendingChains ?? new DefaultPendingChainStore();
     this.tenantId = options.tenantId ?? null;
     this.metrics = options.metrics ?? null;
     this.tenantLimits = options.tenantLimits ?? null;
@@ -232,23 +248,34 @@ export class UnifiedCortex extends BaseOrchestrator {
     reflexPrepared = false,
   ): Promise<string> {
     const cleanText = userMessage.replace(/^\/(claude|gemini|nvidia)\s*/i, "");
+    const sessionId = this.getSessionId();
+
+    // Ejecución pendiente: el mensaje actual responde a la pregunta de la URL.
+    const pending = this.pendingChains.get(sessionId);
+    if (pending) {
+      this.pendingChains.clear(sessionId);
+      this.addUserMessage(cleanText);
+      const url = extractUrl(cleanText);
+      const reply = url
+        ? await this.runScrapeAndStore(url)
+        : PENDING_DISCARDED_WARNING;
+      return this.replyAssistant(reply, streaming);
+    }
+
     if (!reflexPrepared) {
       this.trackInput(cleanText);
       const match = await this.queryReflex(cleanText);
-      if (match?.mode === "reflex") {
-        const results = await this.executeReflex(match);
-        const content = results.at(-1) ?? "✅ Tarea completada.";
-        this.addHistoryMessage(this.getSessionId(), {
-          role: "assistant",
-          content,
-          timestamp: Date.now(),
-        });
-        return streaming ? content : "";
+      if (
+        match &&
+        isScrapeStoreSequence(match.record.sequence) &&
+        match.similarity >= CHAIN_MIN_SIMILARITY
+      ) {
+        return this.handleScrapeAndStore(cleanText, streaming);
       }
       if (match?.mode === "hint") {
         this.addHistoryMessage(this.getSessionId(), {
           role: "system",
-          content: `[Memoria Refleja] Secuencia exitosa anterior: ${match.record.sequence}. Úsala como guía si aplica.`,
+          content: `[Jev] Secuencia sugerida: ${match.record.sequence}. Úsala como guía si aplica.`,
           timestamp: Date.now(),
         });
       }
@@ -407,6 +434,76 @@ export class UnifiedCortex extends BaseOrchestrator {
   private async refreshTools(): Promise<void> {
     this.toolSnapshot =
       (await this.getUnifiedTools()) as unknown as readonly import("../providers/providerTypes.js").LLMTool[];
+  }
+
+  private addUserMessage(content: string): void {
+    this.addHistoryMessage(this.getSessionId(), {
+      role: "user",
+      content,
+      timestamp: Date.now(),
+    });
+  }
+
+  private replyAssistant(content: string, streaming: boolean): string {
+    this.addHistoryMessage(this.getSessionId(), {
+      role: "assistant",
+      content,
+      timestamp: Date.now(),
+    });
+    return streaming ? content : "";
+  }
+
+  /** Cadena scrape_url → database_insert: pide la URL si falta, o ejecuta sin LLM. */
+  private async handleScrapeAndStore(
+    text: string,
+    streaming: boolean,
+  ): Promise<string> {
+    this.addUserMessage(text);
+    const url = extractUrl(text);
+    if (!url) {
+      this.pendingChains.set(this.getSessionId(), SCRAPE_STORE_SEQUENCE);
+      return this.replyAssistant(URL_QUESTION, streaming);
+    }
+    return this.replyAssistant(await this.runScrapeAndStore(url), streaming);
+  }
+
+  /**
+   * Ejecuta scrape_url y db_insert en células distintas.
+   * Cada paso muta la célula al tipo que expone la herramienta (sensory, memory).
+   */
+  private async runScrapeAndStore(url: string): Promise<string> {
+    const metadata = { chain: SCRAPE_STORE_SEQUENCE };
+    try {
+      await this.routeStimulus({
+        type: "sensory",
+        source: "jev-chain",
+        metadata,
+      });
+      const page = await this.executeAction("scrape_url", { url });
+
+      await this.routeStimulus({
+        type: "memory",
+        source: "jev-chain",
+        metadata,
+      });
+      // DDL de infraestructura: va directo al organismo para que no quede como paso del reflex.
+      await this.organisms[0].callTool("db_query", {
+        sql: CREATE_CHAIN_TABLE_SQL,
+      });
+      await this.executeAction("db_insert", {
+        table: CHAIN_TABLE,
+        data: { url, payload: page, created_at: new Date().toISOString() },
+      });
+
+      return `Guardé el contenido de ${url} en la tabla ${CHAIN_TABLE}.`;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error("Cadena scrape_url → database_insert falló", {
+        url,
+        error: message,
+      });
+      return `No pude completar la ejecución: ${message}`;
+    }
   }
 
   private async preRoute(input: string): Promise<boolean> {
