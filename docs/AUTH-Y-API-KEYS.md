@@ -44,7 +44,7 @@ Las claves de LLM y de Jev no son de rol: son del despliegue. Se describen en la
 - **Quién:** el dueño de un negocio cliente. En un restaurante con un solo local, es el dueño del restaurante. En contabilidad, es el dueño de la empresa cliente del contador.
 - **Ejemplos:** el dueño de una ferretería que aprueba pagos e invita a su personal; el dueño de un restaurante que cambia precios y gestiona al equipo.
 - **Credencial:** API key de tenant (ver sección 3). Con ella el login emite un JWT con `role: "tenant_owner"`.
-- **Qué puede:** las rutas del propio tenant: `chat`, `history`, `tools`, `perf`, `mutations`, `reflex`, `tenant-profile`, `orders/*`, `inventory/alerts`, `template/execute`.
+- **Qué puede:** las rutas del propio tenant: `chat`, `history`, `tools`, `perf`, `mutations`, `reflex`, `tenant-profile`, `template/execute`.
 - **Qué no puede:** otros tenants, `tenants`, `logs`, `monitor/*`, `registry`, `circuit-breaker`, ni ninguna ruta `platform/*`.
 
 ### 2.4 Operador y viewer de tenant

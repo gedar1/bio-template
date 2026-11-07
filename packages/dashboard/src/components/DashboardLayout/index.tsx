@@ -3,7 +3,6 @@ import { Dna, LogOut } from "lucide-react";
 import type {
   SectionId,
   NotificationBadge,
-  LogEntry,
   CircuitBreakerStatus,
   MutationEvent,
 } from "../../types/dashboard";
@@ -24,6 +23,8 @@ import { PlatformSection } from "../PlatformSection";
 import { computeBadges, type BadgeEvent } from "../../utils/computeBadges";
 import { IS_STUDIO_MODE, DEFAULT_TENANT_ID } from "../../utils/deploymentMode";
 import { BRAND_NAME } from "../../utils/brand";
+import { useApi } from "../../hooks/useApi";
+import { subscribeLogStream } from "../../hooks/logStream";
 
 export const DashboardLayout: React.FC = () => {
   const { role } = useRole();
@@ -47,101 +48,83 @@ export const DashboardLayout: React.FC = () => {
     setBadgeEvents((prev) => prev.filter((e) => e.sectionId !== section));
   }, []);
 
-  // Listen to log stream for error events → badge on "system" section
-  useEffect(() => {
-    if (activeSection === "system") return;
+  // Badge de errores: se suscribe una vez a la conexión compartida de logs.
+  // En la sección técnica no genera badge, porque LogsPanel ya muestra los errores.
+  const activeSectionRef = useRef(activeSection);
+  activeSectionRef.current = activeSection;
 
-    const es = new EventSource("/api/logs/stream");
-    es.onmessage = (event) => {
-      try {
-        const entry: LogEntry = JSON.parse(event.data);
-        if (entry.level === "error") {
-          setBadgeEvents((prev) => [
-            ...prev,
-            { sectionId: "system", type: "error" },
+  useEffect(() => {
+    return subscribeLogStream((data) => {
+      if (activeSectionRef.current === "system") return;
+      if (data.type === "entry" && data.entry?.level === "error") {
+        setBadgeEvents((prev) => [
+          ...prev,
+          { sectionId: "system", type: "error" },
+        ]);
+      }
+    });
+  }, []);
+
+  // Circuit breaker: se lee con la caché compartida. Un cambio de estado genera badge.
+  const circuitEndpoint =
+    activeSection === "system" ? null : "/api/circuit-breaker";
+  const { data: circuitData } = useApi<
+    CircuitBreakerStatus[] | { breakers?: CircuitBreakerStatus[] }
+  >(circuitEndpoint, 10000);
+
+  useEffect(() => {
+    if (!circuitData) return;
+    const breakers: CircuitBreakerStatus[] = Array.isArray(circuitData)
+      ? circuitData
+      : (circuitData.breakers ?? []);
+
+    if (prevCircuitBreakerRef.current) {
+      for (const breaker of breakers) {
+        const prev = prevCircuitBreakerRef.current.find(
+          (b) => b.name === breaker.name,
+        );
+        if (prev && prev.state !== breaker.state) {
+          setBadgeEvents((events) => [
+            ...events,
+            {
+              sectionId: "system",
+              type: breaker.state === "OPEN" ? "error" : "warning",
+            },
           ]);
         }
-      } catch {
-        /* ignore */
       }
-    };
-    es.onerror = () => es.close();
-    return () => es.close();
-  }, [activeSection]);
+    }
+    prevCircuitBreakerRef.current = breakers;
+  }, [circuitData]);
 
-  // Poll circuit breaker for state changes
-  useEffect(() => {
-    if (activeSection === "system") return;
-
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch("/api/circuit-breaker");
-        if (!res.ok) return;
-        const json = await res.json();
-        const breakers: CircuitBreakerStatus[] = json.breakers ?? json ?? [];
-
-        if (prevCircuitBreakerRef.current) {
-          for (const breaker of breakers) {
-            const prev = prevCircuitBreakerRef.current.find(
-              (b) => b.name === breaker.name,
-            );
-            if (prev && prev.state !== breaker.state) {
-              setBadgeEvents((events) => [
-                ...events,
-                {
-                  sectionId: "system",
-                  type: breaker.state === "OPEN" ? "error" : "warning",
-                },
-              ]);
-            }
-          }
-        }
-        prevCircuitBreakerRef.current = breakers;
-      } catch {
-        /* ignore */
-      }
-    }, 10000);
-
-    return () => clearInterval(interval);
-  }, [activeSection]);
-
-  // Poll mutations for new events
+  // Mutaciones: se leen con la caché compartida. Una mutación nueva genera badge.
   const lastMutationIdRef = useRef<number>(0);
+  const mutationsEndpoint =
+    activeSection === "system" ? null : `/api/mutations?tenantId=${tenantId}`;
+  const { data: mutationsData } = useApi<{ mutations?: MutationEvent[] }>(
+    mutationsEndpoint,
+    10000,
+  );
+
   useEffect(() => {
-    if (activeSection === "system") return;
+    if (!mutationsData) return;
+    const mutations: MutationEvent[] = mutationsData.mutations ?? [];
+    if (mutations.length === 0) return;
 
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/mutations?tenantId=${tenantId}`);
-        if (!res.ok) return;
-        const json = await res.json();
-        const mutations: MutationEvent[] = json.mutations ?? [];
-
-        if (mutations.length > 0) {
-          const maxId = Math.max(...mutations.map((m) => m.id));
-          if (
-            lastMutationIdRef.current > 0 &&
-            maxId > lastMutationIdRef.current
-          ) {
-            const newCount = mutations.filter(
-              (m) => m.id > lastMutationIdRef.current,
-            ).length;
-            for (let i = 0; i < newCount; i++) {
-              setBadgeEvents((events) => [
-                ...events,
-                { sectionId: "system", type: "info" },
-              ]);
-            }
-          }
-          lastMutationIdRef.current = maxId;
-        }
-      } catch {
-        /* ignore */
+    const maxId = Math.max(...mutations.map((m) => m.id));
+    if (lastMutationIdRef.current > 0 && maxId > lastMutationIdRef.current) {
+      const newCount = mutations.filter(
+        (m) => m.id > lastMutationIdRef.current,
+      ).length;
+      for (let i = 0; i < newCount; i++) {
+        setBadgeEvents((events) => [
+          ...events,
+          { sectionId: "system", type: "info" },
+        ]);
       }
-    }, 10000);
-
-    return () => clearInterval(interval);
-  }, [activeSection, tenantId]);
+    }
+    lastMutationIdRef.current = maxId;
+  }, [mutationsData]);
 
   const badges: NotificationBadge[] = computeBadges(badgeEvents, activeSection);
 

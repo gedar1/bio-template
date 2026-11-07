@@ -23,26 +23,6 @@ export function setupTemplateRoutes(health: HealthServer): void {
     const raw = readFileSync(templatesPath, "utf-8");
     templates = JSON.parse(raw) as TaskTemplate[];
 
-    // Load domain templates from known paths
-    const domainTemplatePaths = [
-      join(process.cwd(), "packages/restaurant/src/config/templates.json"),
-      join(configDir, "../../restaurant/src/config/templates.json"),
-    ];
-
-    for (const domainPath of domainTemplatePaths) {
-      try {
-        const domainRaw = readFileSync(domainPath, "utf-8");
-        const domainTemplates = JSON.parse(domainRaw) as TaskTemplate[];
-        templates = [...templates, ...domainTemplates];
-        log.info(
-          { count: domainTemplates.length, path: domainPath },
-          "Domain templates cargados",
-        );
-        break; // Use first found
-      } catch {
-        // Domain template file not found at this path, try next
-      }
-    }
 
     log.info({ count: templates.length }, "Templates cargados correctamente");
   } catch (err: unknown) {

@@ -221,7 +221,10 @@ export class UnifiedCortex extends BaseOrchestrator {
     this.sessionActive = true;
     try {
       await this.checkTokenLimit();
-      yield* super.chatStream(userMessage, signal);
+      const result = await this.runConversation(userMessage, true, signal);
+      if (result) yield result;
+      this.recordMetric("task_completed", 1);
+      await this.saveReflex();
     } catch (error: unknown) {
       this.recordMetric("task_error", 1);
       throw error;
@@ -231,21 +234,10 @@ export class UnifiedCortex extends BaseOrchestrator {
     }
   }
 
-  protected override async *streamFromLLM(
-    userMessage: string,
-    signal?: AbortSignal,
-  ): AsyncGenerator<string> {
-    const result = await this.runConversation(userMessage, true, signal, true);
-    if (result) yield result;
-    this.recordMetric("task_completed", 1);
-    await this.saveReflex();
-  }
-
   private async runConversation(
     userMessage: string,
     streaming: boolean,
     signal?: AbortSignal,
-    reflexPrepared = false,
   ): Promise<string> {
     const cleanText = userMessage.replace(/^\/(claude|gemini|nvidia)\s*/i, "");
     const sessionId = this.getSessionId();
@@ -262,23 +254,21 @@ export class UnifiedCortex extends BaseOrchestrator {
       return this.replyAssistant(reply, streaming);
     }
 
-    if (!reflexPrepared) {
-      this.trackInput(cleanText);
-      const match = await this.queryReflex(cleanText);
-      if (
-        match &&
-        isScrapeStoreSequence(match.record.sequence) &&
-        match.similarity >= CHAIN_MIN_SIMILARITY
-      ) {
-        return this.handleScrapeAndStore(cleanText, streaming);
-      }
-      if (match?.mode === "hint") {
-        this.addHistoryMessage(this.getSessionId(), {
-          role: "system",
-          content: `[Jev] Secuencia sugerida: ${match.record.sequence}. Úsala como guía si aplica.`,
-          timestamp: Date.now(),
-        });
-      }
+    this.trackInput(cleanText);
+    const match = await this.queryReflex(cleanText);
+    if (
+      match &&
+      isScrapeStoreSequence(match.record.sequence) &&
+      match.similarity >= CHAIN_MIN_SIMILARITY
+    ) {
+      return this.handleScrapeAndStore(cleanText, streaming);
+    }
+    if (match?.mode === "hint") {
+      this.addHistoryMessage(this.getSessionId(), {
+        role: "system",
+        content: `[Jev] Secuencia sugerida: ${match.record.sequence}. Úsala como guía si aplica.`,
+        timestamp: Date.now(),
+      });
     }
 
     let effectsStarted = await this.preRoute(cleanText);

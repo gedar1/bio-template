@@ -5,137 +5,94 @@ fileMatchPattern: "packages/core/src/**"
 
 # 🏗️ BioCore - Arquitectura
 
-Fuente completa: #[[file:docs/biocore/biocore-architecture.md]]
+Fuentes de verdad: `docs/DECISIONS-AND-CONFIG.md` (decisiones y configuración) y `.kiro/steering/biocore-jev-pre-routing.md` (flujo de cadenas).
 
 ## Capas del Sistema
 
 ```
-Usuario / API / Webhook / Scheduler / CLI / IDE (via MCP)
+Usuario / Dashboard / API / Scheduler / CLI
               ↓
 ┌─────────────────────────────────┐
-│ MCP External Server             │ MCPHttpServer / MCPExternalServer — Expone BioCore a IDEs
+│ Servidor HTTP                   │ ProductionServer, HealthServer, RouteRegistry, rutas en server/routes/
 └──────────────┬──────────────────┘
                ↓
 ┌─────────────────────────────────┐
-│ [[biocore-glossary#Cortex]]     │ UnifiedCortex — Fallback: Gemini → Claude → NVIDIA
+│ Cortex                          │ UnifiedCortex — gate de cadenas (Jev), luego LLM con fallback
 └──────────────┬──────────────────┘
                ↓
 ┌─────────────────────────────────┐
-│ Orquestador                     │ BaseOrchestrator — Unifica herramientas, difunde mutaciones
+│ Orquestador                     │ BaseOrchestrator — unifica herramientas, difunde mutaciones, ejecuta acciones
 └──────────────┬──────────────────┘
                ↓
 ┌─────────────────────────────────┐
-│ [[biocore-glossary#Organismo]]  │ BaseOrganisms — Sub-agentes MCP, controlan células
+│ Organismo                       │ BaseOrganisms — controla una célula MCP como proceso hijo
 └──────────────┬──────────────────┘
                ↓
 ┌─────────────────────────────────┐
-│ [[biocore-glossary#Célula]]     │ CellServer — Servidor MCP dinámico, muta según estímulo
+│ Célula                          │ CellServer — servidor MCP, muta de tipo y expone solo sus herramientas
 └──────────────┬──────────────────┘
                ↓
 ┌─────────────────────────────────┐
-│ [[biocore-glossary#Molécula]]   │ Lógica de negocio (DB, HTTP, Scraper, Git, Email, etc.)
+│ Molécula                        │ Lógica de negocio (DB, HTTP, scraper, git, email, dominio)
 └──────────────┬──────────────────┘
                ↓
 ┌─────────────────────────────────┐
-│ [[biocore-glossary#Átomo]]      │ Funciones puras (schema, toolFormat, modelSelection)
+│ Átomo                           │ Funciones puras (schema, toolFormat, cellRouter, reflexSelector, chainExtraction, sequence, paths)
 └─────────────────────────────────┘
 ```
 
 ## Archivos Clave
 
-| Capa            | Archivo                                   | Responsabilidad                                                           |
-| --------------- | ----------------------------------------- | ------------------------------------------------------------------------- |
-| Cortex          | `system/implementations/UnifiedCortex.ts` | Selecciona modelo, ejecuta chat loops, fallback 3 niveles                 |
-| Cortex NVIDIA   | `system/implementations/NvidiaCortex.ts`  | Cortex con NVIDIA NIM API (Nemotron 49B, tool calling)                    |
-| Orquestador     | `system/BaseOrchestrator.ts`              | Orquestación pura: register, route, execute, stream. Delega a strategies  |
-| Estrategias     | `system/strategies/*.ts`                  | IReflexExecutor, IHistoryManager, IPerfTracker + Default implementations  |
-| Organismo       | `organisms/BaseOrganisms.ts`              | Controla célula MCP como proceso hijo                                     |
-| Célula          | `cells/CellServer.ts`                     | Muta dinámicamente, instancia moléculas                                   |
-| Moléculas       | `molecules/*.ts`                          | Lógica de negocio reutilizable                                            |
-| Átomos          | `atoms/*.ts`                              | Funciones puras sin estado                                                |
-| Paths           | `atoms/paths.ts`                          | `getModuleDir()`, `getProjectRoot()` — resolución de rutas centralizada   |
-| Tool Format     | `atoms/toolFormat.ts`                     | `formatToolsForAnthropic`, `formatToolsForGemini`, `formatToolsForOpenAI` |
-| Config          | `config/registry.json`                    | Define tipos de célula y herramientas                                     |
-| Logger          | `config/ILogger.ts`                       | Interfaz `ILogger` + `PinoLoggerAdapter` (DI para logging)                |
-| Telemetría      | `config/telemetry.ts`                     | Bootstrap OpenTelemetry SDK, `startSpan`, `measureSpan`                   |
-| Memoria Refleja | `molecules/ReflexMolecule.ts`             | Guarda/recupera secuencias por similitud semántica                        |
-| Embeddings      | `atoms/embeddings.ts`                     | `computeEmbedding`, `cosineSimilarity`, `preloadPipeline` ($0)            |
-| Interpolación   | `atoms/interpolation.ts`                  | `deriveTemplate`, `interpolateTemplate`, serialización ArgTemplates       |
-| Param Extractor | `atoms/paramExtractor.ts`                 | `extractParamsFromText` — extrae URL, tabla, path del texto               |
-| Infraestructura | `infrastructure/*.ts`                     | `PerfMonitor`, `CircuitBreaker`, `Scheduler`, `TenantDatabaseManager`     |
-| RouteRegistry   | `server/RouteRegistry.ts`                 | Registro centralizado de 14 rutas con error handling individual           |
-| MCP Local       | `server/MCPExternalServer.ts`             | MCP Server stdio para uso individual en IDE local                         |
-| MCP Remoto      | `server/MCPHttpServer.ts`                 | MCP Server HTTP para equipos (Streamable HTTP Transport)                  |
-| Tenant Manager  | `server/TenantManager.ts`                 | Multi-tenant: aísla cortex, BD, perfil y agente por cliente               |
-| Agentes Dominio | `config/agents/*.md`                      | System prompts por industria (restaurante, clínica, dev, ecommerce)       |
-| Perfiles        | `config/tenant-profiles.json`             | Células permitidas + agentFile por perfil                                 |
+| Capa         | Archivo                                                              | Responsabilidad                                                                                                                                                                         |
+| ------------ | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cortex       | `system/implementations/UnifiedCortex.ts`                            | Gate de cadenas, pista de Jev, pre-routing de célula, chat loop con proveedores y fallback                                                                                              |
+| Orquestador  | `system/BaseOrchestrator.ts`                                         | Registra organismos, `routeStimulus`, `executeAction`, `queryReflex`, `trackInput`, `saveReflex`                                                                                        |
+| Estrategias  | `system/strategies/`                                                 | `IReflexExecutor` / `DefaultReflexExecutor` (consulta a Jev e historial), `IPendingChainStore` / `DefaultPendingChainStore` (pendientes 24 h), `IHistoryManager`, `IPerfTracker`        |
+| Organismo    | `organisms/BaseOrganisms.ts`                                         | Lanza `CellServer` como proceso hijo; `stimulate`, `inspectTools`, `callTool`                                                                                                           |
+| Célula       | `cells/CellServer.ts`                                                | Muta de tipo (`disposeMolecules` → `activateTypes`, que recorre `parent` y registra herramientas por tipo); registra `db_*`, `scrape_url`, `read_file`, etc.                            |
+| Moléculas    | `molecules/*.ts`                                                     | `DatabaseMolecule` (SQLite del tenant), `ReflexMolecule` (historial de cadenas), `ExampleMolecule` (dominio), HTTP, scraper, git, email                                                 |
+| Átomos       | `atoms/*.ts`                                                         | Puros: `schema.ts` (limpieza de schemas), `toolFormat.ts`, `cellRouter.ts`, `reflexSelector.ts` (`jevEvaluateAll`), `chainExtraction.ts`, `sequence.ts`, `paths.ts` (`resolveDataPath`) |
+| Catálogo Jev | `config/toolCatalog.ts` + `config/tools.json`                        | Herramientas que Jev puede elegir, filtradas por células permitidas                                                                                                                     |
+| Registry     | `config/registry.json`, `config/domain-registry.json`                | Tipos de célula y sus herramientas                                                                                                                                                      |
+| Perfiles     | `config/domain-profile.ts`, `config/profileRegistry.ts`              | `allowedCells`, agente, descripción                                                                                                                                                     |
+| Tenants      | `server/TenantManager.ts`, `infrastructure/TenantDatabaseManager.ts` | Aísla cortex, base de datos y perfil por tenant                                                                                                                                         |
+| Plataforma   | `server/services/platformSchema.ts`                                  | Tablas `platform_*` en la base compartida                                                                                                                                               |
+| Logger       | `config/logger.ts`, `config/ILogger.ts`                              | Pino con `createLogger("Componente")`                                                                                                                                                   |
+| Telemetría   | `config/telemetry.ts`                                                | OpenTelemetry, `startSpan`, `measureSpan`                                                                                                                                               |
+
+## Bases de datos
+
+| Base       | Ruta                                              | Contenido                                                                  |
+| ---------- | ------------------------------------------------- | -------------------------------------------------------------------------- |
+| Compartida | `DATABASE_PATH` (por defecto `./data/biocore.db`) | `platform_*`, `reflexes` (historial), `template_state`, `mutation_history` |
+| Por tenant | `DATABASE_DIR/tenants/<tenant>.db`                | Datos del negocio: `db_*`, `ExampleMolecule`, `jev_chain_results`          |
+
+Las rutas relativas se resuelven desde la raíz del proyecto (`resolveDataPath`). No dependen del directorio de trabajo.
 
 ## Patrones Usados
 
-| Patrón               | Dónde                                                                  | Relación                           |
-| -------------------- | ---------------------------------------------------------------------- | ---------------------------------- |
-| Strategy (DI)        | BaseOrchestrator delega a IReflexExecutor/IHistoryManager/IPerfTracker | `system/strategies/`               |
-| Strategy (model)     | Cortex elige modelo                                                    | Ver [[biocore-llm-decision-flow]]  |
-| Observer             | Orquestador difunde mutaciones                                         | Ver [[biocore-stimulus-sources]]   |
-| Factory              | CellServer instancia moléculas                                         | Ver [[biocore-mutation-lifecycle]] |
-| State Machine        | Célula cambia de estado                                                | Ver [[biocore-mutation-lifecycle]] |
-| Circuit Breaker      | Fallback entre modelos                                                 | Ver [[biocore-execution-flow]]     |
-| Decorator            | `measureSpan` wrappea funciones async con spans OTel                   | `config/telemetry.ts`              |
-| Procedural Memory    | `ReflexMolecule` aprende y reutiliza secuencias exitosas               | `molecules/ReflexMolecule.ts`      |
-| Centralized Registry | `RouteRegistry` registra las 14 rutas del servidor                     | `server/RouteRegistry.ts`          |
-| Interface + Adapter  | `ILogger` + `PinoLoggerAdapter` desacopla logging                      | `config/ILogger.ts`                |
+| Patrón               | Dónde                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------- |
+| Strategy (DI)        | `BaseOrchestrator` delega en `IReflexExecutor`, `IPendingChainStore`, `IHistoryManager`, `IPerfTracker` |
+| Gate de cadenas      | `UnifiedCortex.runConversation`: Jev sugiere; el código decide si ejecuta sin LLM                       |
+| Mutación de célula   | `CellServer` cambia de tipo; cada tipo expone sus herramientas                                          |
+| Pendiente de usuario | Una ejecución espera un dato (la URL) y se reanuda con el siguiente mensaje                             |
+| Circuit Breaker      | Fallback entre proveedores LLM en `UnifiedCortex`                                                       |
+| Interface + Adapter  | `ILogger` + `PinoLoggerAdapter`                                                                         |
 
-## Memoria Refleja (Procedural Memory)
+## Memoria de cadenas (historial)
 
-BioCore implementa **memoria procedural** — el sistema aprende qué secuencia de herramientas resuelve cada tipo de tarea y la reutiliza automáticamente.
+`ReflexMolecule` guarda la secuencia de herramientas ejecutada como historial. **No decide nada.**
 
-```
-Input usuario
-   ↓ normalizeForEmbedding()  ← elimina URLs/emails/IPs concretas
-   ↓ computeEmbedding()       ← vector 384 dims, modelo multilingüe, $0
-   ↓ HNSW opcional                ← búsqueda O(log n), fallback lineal O(n)
-   ↓ compositeScore           ← similarity × temporalDecay × reliabilityBoost
-   ↓
-┌─────────────────────────────────────────────────────────────┐
-│ sim ≥ adaptiveThreshold + éxitos ≥ 3 → REFLEX              │
-│   interpolateTemplate() resuelve $URL, $TABLE del input     │
-│   Ejecuta secuencia directamente sin LLM                    │
-│   chainOutputTo: paso N → paso N+1 declarativo              │
-│   0 tokens consumidos                                       │
-├─────────────────────────────────────────────────────────────┤
-│ sim ≥ 0.80 → HINT                                           │
-│   Inyecta secuencia como contexto al LLM                    │
-│   ~40% menos razonamiento                                   │
-├─────────────────────────────────────────────────────────────┤
-│ sim < 0.80 → NORMAL                                         │
-│   Loop LLM completo → guarda reflex con ArgTemplate al fin  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Componentes involucrados
-
-| Componente                                   | Responsabilidad                                                                |
-| -------------------------------------------- | ------------------------------------------------------------------------------ |
-| `atoms/embeddings.ts`                        | `computeEmbedding`, `cosineSimilarity`, `preloadPipeline` (local, $0)          |
-| `atoms/interpolation.ts`                     | `deriveTemplate`, `interpolateTemplate`, serialización de ArgTemplates         |
-| `atoms/paramExtractor.ts`                    | `extractParamsFromText` — extrae URL, tabla, path, email del texto del usuario |
-| `molecules/ReflexMolecule.ts`                | SQLite + HNSW index, temporal decay, adaptive threshold, schema versioning     |
-| `system/strategies/DefaultReflexExecutor.ts` | Lógica completa de reflex: query, execute, save, schema versions               |
-| `system/BaseOrchestrator.ts`                 | `chatStream` → delega a IReflexExecutor, facade methods                        |
-| `infrastructure/PerfMonitor`                 | `ReflexMetrics`: hit/miss rate, token savings, degradation tracking            |
-
-### Modelo de embeddings
-
-- **Modelo:** `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (via `@xenova/transformers`)
-- **Dimensión:** 384 números por vector
-- **Velocidad:** ~5ms por embedding en CPU (pre-cargado al boot)
-- **Costo:** $0 siempre — 100% local, sin API externa
-- **Idiomas:** 50+ incluyendo español e inglés con cross-language ~0.80
+- La selección de cadenas la hace Jev sobre `tools.json` (ver `biocore-jev-pre-routing.md`).
+- Los umbrales adaptativos, el modo `reflex` y la búsqueda por embeddings se retiraron.
+- La columna `embedding` de `reflexes` queda vacía por compatibilidad.
+- El dashboard muestra el conteo de ejecuciones y la última vez usada.
 
 ## Relaciones
 
-- El flujo de ejecución completo está en [[biocore-execution-flow]]
-- Cómo el LLM recibe las herramientas está en [[biocore-what-llm-receives]]
-- La comparación con arquitectura tradicional está en [[biocore-tools-comparison]]
-- Las fuentes de estímulo están en [[biocore-stimulus-sources]]
-- Las decisiones arquitectónicas están en [[biocore-decisions]]
+- Flujo de ejecución completo: [[biocore-execution-flow]]
+- Flujo de cadenas con Jev: [[biocore-jev-pre-routing]]
+- Decisiones: [[biocore-decisions]]
+- Glosario: [[biocore-glossary]]
+- Límites entre capas: [[biocore-boundaries]]

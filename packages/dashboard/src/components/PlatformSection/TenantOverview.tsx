@@ -5,7 +5,7 @@ import { TenantDetail } from "./TenantDetail";
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 type TenantStatus = "active" | "inactive" | "degraded";
-type TenantProfile = "dev" | "restaurant" | "clinic" | "ecommerce";
+type TenantProfile = "domain";
 type HealthStatus = "healthy" | "degraded" | "inactive";
 
 interface TenantRecord {

@@ -6,7 +6,7 @@ description: "Cómo Jev elige la cadena de herramientas, cuándo se ejecuta sin 
 
 # Jev: selección de cadenas y ejecución sin LLM
 
-Este documento describe el flujo vigente en `UnifiedCortex`. Reemplaza la versión anterior, que describía `executeDetectedChain` como pendiente y la ruta de `TenantManager`. Esa ruta sigue existiendo para `POST /api/platform/semantic_route`, pero no interviene en el chat.
+Este documento describe el flujo vigente en `UnifiedCortex`. Reemplaza la versión anterior, que describía `executeDetectedChain` como pendiente y la ruta de `TenantManager`. El endpoint `POST /api/platform/semantic_route` se retiró junto con su pipeline de ranking. Ya no existe ninguna ruta de cadenas fuera del chat.
 
 ## Idea central
 
@@ -47,7 +47,7 @@ POST /api/chat → TenantManager.chat → UnifiedCortex.chat → runConversation
 
 La célula tiene un solo tipo activo a la vez, así que la cadena muta entre `sensory` y `memory`. `sensory` debe estar en `allowedCells` del perfil. Sin ese permiso, la mutación se rechaza.
 
-El gate no usa `ExecutionChainRunner`. Llama directamente a `routeStimulus` y `executeAction`.
+El gate no usa ningún runner. Llama directamente a `routeStimulus` y `executeAction`.
 
 ## Dónde vive cada pieza
 

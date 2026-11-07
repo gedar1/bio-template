@@ -9,7 +9,7 @@ export const ActiveToolsList: React.FC<ActiveToolsListProps> = ({
   const { data } = useApi<
     | Array<{ name: string; description?: string }>
     | { tools?: Array<{ name: string; description?: string }> }
-  >(`/api/tools?tenantId=${tenantId}`, 5000);
+  >(`/api/tools?tenantId=${tenantId}`);
 
   // Handle both formats
   const tools: Array<{ name: string; description?: string }> = Array.isArray(

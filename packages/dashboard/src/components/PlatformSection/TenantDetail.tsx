@@ -4,7 +4,7 @@ import { usePlatformApi, platformFetch } from "./usePlatformApi";
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 type TenantStatus = "active" | "inactive" | "degraded";
-type TenantProfile = "dev" | "restaurant" | "clinic" | "ecommerce";
+type TenantProfile = "domain";
 type HealthStatus = "healthy" | "degraded" | "inactive";
 
 interface TenantRecord {
@@ -34,7 +34,7 @@ interface TenantDetailProps {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const PROFILES: TenantProfile[] = ["dev", "restaurant", "clinic", "ecommerce"];
+const PROFILES: TenantProfile[] = ["domain"];
 
 const STATUS_COLORS: Record<TenantStatus, string> = {
   active: "bg-green-500/20 text-green-400 border-green-500/30",

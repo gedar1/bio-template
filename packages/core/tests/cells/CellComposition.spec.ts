@@ -151,7 +151,6 @@ describe("CellServer - composición inyectable", () => {
     const initialTools = await client.listTools();
     expect(initialTools.tools.map((tool) => tool.name)).toEqual([
       "stimulate_differentiation",
-      "execute_detected_chain",
     ]);
 
     await client.callTool({
@@ -260,14 +259,12 @@ describe("CellServer - composición inyectable", () => {
     await stimulate("example");
     expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
       "stimulate_differentiation",
-      "execute_detected_chain",
       "example_tool",
     ]);
 
     await stimulate("other");
     expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
       "stimulate_differentiation",
-      "execute_detected_chain",
       "base_tool",
       "other_tool",
     ]);
@@ -277,7 +274,6 @@ describe("CellServer - composición inyectable", () => {
     await stimulate("example");
     expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
       "stimulate_differentiation",
-      "execute_detected_chain",
       "example_tool",
     ]);
     expect(parentFixture.disposeCount).toBe(1);
@@ -324,7 +320,6 @@ describe("CellServer - composición inyectable", () => {
     expect(fixture.disposeCount).toBe(1);
     expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
       "stimulate_differentiation",
-      "execute_detected_chain",
     ]);
   });
 
@@ -368,7 +363,6 @@ describe("CellServer - composición inyectable", () => {
     expect(result.isError).toBe(true);
     expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
       "stimulate_differentiation",
-      "execute_detected_chain",
     ]);
   });
 
@@ -418,7 +412,6 @@ describe("CellServer - composición inyectable", () => {
     expect(fixture.disposeCount).toBe(1);
     expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
       "stimulate_differentiation",
-      "execute_detected_chain",
     ]);
   });
   it("rechaza recursos duplicados y libera los creados durante la mutación", async () => {

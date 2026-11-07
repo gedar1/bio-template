@@ -17,8 +17,7 @@ inclusion: manual
 
 ## Jev: Detección Multi-Paso Pre-LLM
 
-- [[biocore-jev-pre-routing]] — NUEVO: Flujo Jev (PASO 7), ejecución directa (PASO 8), persistencia (PASO 9)
-- **ExecutionChainRunner** — Atom para ejecutar cadenas detectadas por Jev
+- [[biocore-jev-pre-routing]] — Flujo Jev: selección de cadena y gate `scrape_url→db_insert` sin LLM
 
 ## Estímulos y Mutación
 
@@ -27,7 +26,7 @@ inclusion: manual
 
 ## Conceptos Clave
 
-- [[biocore-glossary]] — Glosario: Cortex, Organismo, Célula, Molécula, Átomo, Jev, ExecutionChainRunner
+- [[biocore-glossary]] — Glosario: Cortex, Organismo, Célula, Molécula, Átomo, Jev
 
 ## Decisiones
 

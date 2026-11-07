@@ -1,69 +1,11 @@
 import Database from "better-sqlite3";
 import { createLogger } from "../config/logger.js";
-import { isEmbeddingsEnabled } from "../config/embeddings.js";
 import type { IMolecule } from "./interfaces/IMolecule.js";
-import {
-  cosineSimilarity,
-  normalizeSequence,
-  serializeEmbedding,
-  deserializeEmbedding,
-  type Embedding,
-} from "../atoms/embeddings.js";
-import {
-  serializeArgTemplates,
-  deserializeArgTemplates,
-  type ReflexArgTemplates,
-} from "../atoms/interpolation.js";
-import { measureSpan } from "../config/telemetry.js";
+import { normalizeSequence } from "../atoms/sequence.js";
 import type { PerfMonitor } from "../infrastructure/PerfMonitor.js";
 import { resolveDataPath } from "../atoms/paths.js";
 
 const log = createLogger("ReflexMolecule");
-
-// ─── Dynamic import for hnswlib-node (may not be available) ───────────────────
-
-interface HnswIndex {
-  initIndex(
-    maxElements: number,
-    m: number,
-    efConstruction: number,
-    randomSeed: number,
-  ): void;
-  addPoint(embedding: Embedding, label: number): void;
-  getMaxElements(): number;
-  resizeIndex(maxElements: number): void;
-  searchKnn(
-    embedding: Embedding,
-    k: number,
-  ): { neighbors: number[]; distances: number[] };
-}
-
-type HnswConstructor = new (space: "cosine", dimension: number) => HnswIndex;
-
-type HnswModule = {
-  HierarchicalNSW?: HnswConstructor;
-  default?: { HierarchicalNSW?: HnswConstructor };
-};
-
-let HierarchicalNSW: HnswConstructor | null = null;
-
-async function loadHnswlib(): Promise<void> {
-  try {
-    // @ts-ignore — hnswlib-node is an optional peer without required type declarations
-    const mod = (await import("hnswlib-node")) as unknown as HnswModule;
-    HierarchicalNSW =
-      mod.HierarchicalNSW ?? mod.default?.HierarchicalNSW ?? null;
-    if (!HierarchicalNSW) {
-      log.info("hnswlib-node unavailable; using linear scan fallback");
-    }
-  } catch (error: unknown) {
-    HierarchicalNSW = null;
-    log.info(
-      { error: error instanceof Error ? error.message : String(error) },
-      "hnswlib-node unavailable; using linear scan fallback",
-    );
-  }
-}
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
 
@@ -77,39 +19,37 @@ export interface ReflexStep {
   chainOutputTo?: string;
 }
 
-/** Un reflejo guardado: tarea + secuencia exitosa */
+/** Un reflejo guardado: secuencia de herramientas de una tarea exitosa */
 export interface ReflexRecord {
   id: number;
   /** Resumen de la tarea original (primeras 200 chars del input) */
   taskSummary: string;
-  /** Secuencia canónica: "mutate:sensory→scrape_url→mutate:memory→db_insert" */
+  /** Secuencia canónica: "mutate:sensory->scrape_url->mutate:memory->db_insert" */
   sequence: string;
   /** Pasos deserializados */
   steps: ReflexStep[];
-  /** Número de veces que se ejecutó con éxito */
+  /** Número de veces que se registró la secuencia (historial, no decide nada) */
   successCount: number;
   /** Número de veces que falló al reutilizarse */
   failureCount: number;
   /** Timestamp del último uso */
   lastUsed: number;
-  /** Arg templates for each step (null for legacy reflexes) */
-  argTemplates: ReflexArgTemplates | null;
   /** Schema versions at creation time (null for legacy reflexes) */
   schemaVersions: Record<string, string> | null;
   /** Similitud con el input actual (solo en resultados de búsqueda) */
   similarity?: number;
-  /** Composite score including decay and reliability (only in search results) */
+  /** Puntaje compuesto (solo en resultados de búsqueda) */
   compositeScore?: number;
 }
 
-/** Resultado de búsqueda de reflexes similares */
+/** Sugerencia de cadena para un input */
 export interface ReflexMatch {
   record: ReflexRecord;
-  /** Similitud coseno contra el input actual (0-1) */
+  /** Confianza de la sugerencia (0-1) */
   similarity: number;
-  /** Composite score with temporal decay and reliability */
+  /** Puntaje compuesto */
   compositeScore: number;
-  /** Recomendación del sistema */
+  /** Modo recomendado. Solo "hint": la sugerencia la usa el orquestador */
   mode: "reflex" | "hint" | "none";
   /** If degraded, the reason */
   degradationReason?:
@@ -119,18 +59,14 @@ export interface ReflexMatch {
 }
 
 /**
- * Molécula de Memoria Refleja — "Procedural Memory" de BioCore.
+ * Molécula de historial de cadenas — "Procedural Memory" de BioCore.
  *
- * Guarda secuencias de herramientas que resolvieron tareas exitosamente
- * y permite recuperarlas por similitud semántica para:
- *   - REFLEX (sim > adaptive threshold, éxitos ≥ 3): ejecutar directo sin LLM
- *   - HINT   (sim > 0.80):              inyectar como contexto al LLM
- *   - NONE   (sim < 0.80):              LLM resuelve solo y aprende
+ * Guarda las secuencias de herramientas que se ejecutaron. La selección de
+ * cadenas la hace Jev sobre tools.json (ver docs/DECISIONS-AND-CONFIG.md, 3.6),
+ * así que esta tabla es un registro, no un criterio de decisión.
  *
- * Los embeddings se almacenan serializados en SQLite (JSON).
- * Vector index (`hnswlib-node`, optional peer) provides O(log n) search when available.
- * Linear scan remains available with O(n) cost when the native index is absent.
- * `better-sqlite3` is a separate required native dependency for persistence.
+ * La columna `embedding` se conserva como texto vacío por compatibilidad con
+ * la tabla existente. La búsqueda vectorial se retiró.
  */
 export class ReflexMolecule implements IMolecule {
   readonly name = "reflex";
@@ -138,17 +74,6 @@ export class ReflexMolecule implements IMolecule {
 
   private db!: Database.Database;
   private readonly dbPath: string;
-
-  /** Half-life in days for temporal decay */
-  private static readonly DECAY_HALF_LIFE_DAYS = 30;
-
-  // ─── Vector index fields ──────────────────────────────────────────────────
-
-  private vectorIndex: HnswIndex | null = null;
-  private vectorIndexMode: "hnsw" | "linear" = "linear";
-  private labelToId: Map<number, number> = new Map();
-  private idToLabel: Map<number, number> = new Map();
-  private nextLabel: number = 0;
 
   /** Optional PerfMonitor for recording reflex metrics */
   private perf?: PerfMonitor;
@@ -168,14 +93,6 @@ export class ReflexMolecule implements IMolecule {
     this.perf = perf;
   }
 
-  /** Reports whether reflex search uses HNSW or the linear fallback. */
-  getVectorIndexMode(): "hnsw" | "linear" {
-    if (this.vectorIndexMode === "hnsw" && !this.hasUsableVectorIndex()) {
-      this.invalidateVectorIndex("mapping", "HNSW label maps are inconsistent");
-    }
-    return this.vectorIndexMode;
-  }
-
   async initialize(): Promise<void> {
     this.db = new Database(this.dbPath);
     this.db.pragma("journal_mode = WAL");
@@ -185,39 +102,10 @@ export class ReflexMolecule implements IMolecule {
 
     this.initTable();
 
-    // Log embeddings decision
-    if (isEmbeddingsEnabled()) {
-      log.info("Embeddings habilitados, usando HNSW search");
-    } else {
-      log.info("Embeddings deshabilitados, usando Jev-only routing");
-    }
-
-    // Attempt to load hnswlib-node (only if embeddings enabled)
-    if (isEmbeddingsEnabled()) {
-      await loadHnswlib();
-    }
-
-    // Rebuild vector index from existing data (only if embeddings enabled)
-    if (isEmbeddingsEnabled()) {
-      await measureSpan(
-        "Molecule",
-        "vector_index_rebuild",
-        async () => {
-          this.rebuildIndex();
-        },
-        { "vector.source": "sqlite" },
-      );
-    }
-
     log.info({ path: this.dbPath }, "ReflexMolecule conectada");
   }
 
   async dispose(): Promise<void> {
-    this.vectorIndex = null;
-    this.vectorIndexMode = "linear";
-    this.labelToId.clear();
-    this.idToLabel.clear();
-    this.nextLabel = 0;
     this.db?.close();
   }
 
@@ -236,7 +124,6 @@ export class ReflexMolecule implements IMolecule {
       )
     `);
     // Add new columns if they don't exist (backward compatible)
-    this.addColumnIfNotExists("arg_templates_json", "TEXT DEFAULT NULL");
     this.addColumnIfNotExists("schema_versions", "TEXT DEFAULT NULL");
   }
 
@@ -267,235 +154,45 @@ export class ReflexMolecule implements IMolecule {
     }
   }
 
-  // ─── Vector Index Methods ─────────────────────────────────────────────────
-
-  private invalidateVectorIndex(
-    operation: "addPoint" | "resizeIndex" | "rebuild" | "searchKnn" | "mapping",
-    error: unknown,
-    id?: number,
-  ): void {
-    this.vectorIndex = null;
-    this.vectorIndexMode = "linear";
-    this.labelToId.clear();
-    this.idToLabel.clear();
-    this.nextLabel = 0;
-
-    log.warn(
-      {
-        operation,
-        ...(id === undefined ? {} : { id }),
-        error: error instanceof Error ? error.message : String(error),
-      },
-      "HNSW vector index invalidated; using linear scan fallback",
-    );
-  }
-
-  private hasUsableVectorIndex(): boolean {
-    if (
-      !this.vectorIndex ||
-      this.labelToId.size === 0 ||
-      this.idToLabel.size !== this.labelToId.size ||
-      this.nextLabel !== this.labelToId.size
-    ) {
-      return false;
-    }
-
-    for (const [label, id] of this.labelToId) {
-      if (this.idToLabel.get(id) !== label) return false;
-    }
-    for (const [id, label] of this.idToLabel) {
-      if (this.labelToId.get(label) !== id) return false;
-    }
-    return true;
-  }
-
-  private rebuildIndex(): void {
-    // Linear is the safe state until an index is fully initialized and usable.
-    this.vectorIndex = null;
-    this.vectorIndexMode = "linear";
-    this.labelToId.clear();
-    this.idToLabel.clear();
-    this.nextLabel = 0;
-
-    const rows = this.db
-      .prepare("SELECT id, embedding FROM reflexes")
-      .all() as Array<{ id: number; embedding: string }>;
-
-    if (!HierarchicalNSW || rows.length === 0) {
-      log.info(
-        { vectorIndex: this.vectorIndexMode },
-        "Using linear scan fallback for reflex search",
-      );
-      return;
-    }
-
-    try {
-      const maxElements = Math.max(rows.length * 2, 1000);
-      this.vectorIndex = new HierarchicalNSW("cosine", 384);
-      this.vectorIndex.initIndex(maxElements, 16, 200, 100);
-
-      for (const row of rows) {
-        const embedding = deserializeEmbedding(row.embedding);
-        this.vectorIndex.addPoint(embedding, this.nextLabel);
-        this.labelToId.set(this.nextLabel, row.id);
-        this.idToLabel.set(row.id, this.nextLabel);
-        this.nextLabel++;
-      }
-
-      if (!this.hasUsableVectorIndex() || this.labelToId.size !== rows.length) {
-        this.invalidateVectorIndex(
-          "mapping",
-          "HNSW label maps are inconsistent",
-        );
-        return;
-      }
-
-      this.vectorIndexMode = "hnsw";
-      log.info({ count: rows.length }, "Vector index rebuilt");
-    } catch (error: unknown) {
-      this.invalidateVectorIndex("rebuild", error);
-    }
-  }
-
-  private insertIntoIndex(id: number, embedding: Embedding): void {
-    if (!this.vectorIndex) {
-      if (HierarchicalNSW) {
-        this.rebuildIndex();
-      }
-      return;
-    }
-    if (!this.hasUsableVectorIndex()) {
-      this.invalidateVectorIndex(
-        "mapping",
-        "HNSW label maps are inconsistent",
-        id,
-      );
-      return;
-    }
-
-    let operation: "addPoint" | "resizeIndex" = "addPoint";
-    try {
-      // Resize if needed
-      const currentMaxElements = this.vectorIndex.getMaxElements();
-      if (this.nextLabel >= currentMaxElements) {
-        operation = "resizeIndex";
-        const nextMaxElements = Math.max(
-          this.nextLabel + 1,
-          Math.max(currentMaxElements, 1) * 2,
-        );
-        this.vectorIndex.resizeIndex(nextMaxElements);
-        operation = "addPoint";
-      }
-
-      // If this id already has a label, we skip re-adding (HNSW doesn't support update)
-      if (this.idToLabel.has(id)) return;
-
-      this.vectorIndex.addPoint(embedding, this.nextLabel);
-      this.labelToId.set(this.nextLabel, id);
-      this.idToLabel.set(id, this.nextLabel);
-      this.nextLabel++;
-    } catch (error: unknown) {
-      this.invalidateVectorIndex(operation, error, id);
-    }
-  }
-
-  // ─── Scoring Methods ──────────────────────────────────────────────────────
-
-  /**
-   * Exponential decay based on days since last use.
-   * halfLifeDays = 30 → unused for 30 days = 50% weight.
-   */
-  static temporalDecay(
-    lastUsedMs: number,
-    nowMs: number = Date.now(),
-    halfLifeDays: number = 30,
-  ): number {
-    const daysSinceUse = (nowMs - lastUsedMs) / (1000 * 60 * 60 * 24);
-    return Math.pow(0.5, daysSinceUse / halfLifeDays);
-  }
-
-  /**
-   * Reliability boost: slight preference for higher success ratio.
-   * Maps [0,1] success ratio → [0.8, 1.2] multiplier.
-   */
-  static reliabilityBoost(successCount: number, failureCount: number): number {
-    const total = successCount + failureCount;
-    if (total === 0) return 1.0;
-    const ratio = successCount / total;
-    return 0.8 + 0.4 * ratio;
-  }
-
   // ─── Core Methods ─────────────────────────────────────────────────────────
 
   /**
-   * Guarda una nueva secuencia exitosa o incrementa su contador si ya existe.
+   * Guarda una secuencia ejecutada o incrementa su contador si ya existe.
    *
    * @param taskSummary    - Descripción corta del input del usuario
    * @param steps          - Pasos de ejecución en orden
-   * @param embedding      - Vector del taskSummary (calculado con computeEmbedding, ignored if ENABLE_EMBEDDINGS=false)
-   * @param argTemplates   - Arg templates for each step (optional)
-   * @param schemaVersions - Schema versions at creation time (optional)
+   * @param schemaVersions - Schema versions at creation time (optional, legacy)
    */
   save(
     taskSummary: string,
     steps: ReflexStep[],
-    embedding: Embedding,
-    argTemplates?: ReflexArgTemplates,
     schemaVersions?: Record<string, string>,
   ): number {
     const sequence = normalizeSequence(steps.map((s) => s.action));
-    const argTemplatesJson = argTemplates
-      ? serializeArgTemplates(argTemplates)
-      : null;
     const schemaVersionsJson = schemaVersions
       ? JSON.stringify(schemaVersions)
       : null;
 
-    // Serialize embedding only if embeddings are enabled
-    let serializedEmbedding = "";
-    if (isEmbeddingsEnabled()) {
-      serializedEmbedding = serializeEmbedding(embedding);
-    } else {
-      // If embeddings disabled, store empty embedding (backward compatible)
-      serializedEmbedding = JSON.stringify([]);
-    }
-
     // Verificar si ya existe una secuencia idéntica
     const existing = this.db
-      .prepare(
-        "SELECT id, success_count, embedding FROM reflexes WHERE sequence = ?",
-      )
-      .get(sequence) as
-      | { id: number; success_count: number; embedding: string }
-      | undefined;
+      .prepare("SELECT id FROM reflexes WHERE sequence = ?")
+      .get(sequence) as { id: number } | undefined;
 
     if (existing) {
       this.db
         .prepare(
-          `UPDATE reflexes 
-           SET embedding = ?, success_count = success_count + 1, last_used = ?,
-               arg_templates_json = COALESCE(?, arg_templates_json),
+          `UPDATE reflexes
+           SET success_count = success_count + 1, last_used = ?,
                schema_versions = COALESCE(?, schema_versions),
                steps_json = ?
            WHERE id = ?`,
         )
         .run(
-          serializedEmbedding,
           Date.now(),
-          argTemplatesJson,
           schemaVersionsJson,
           JSON.stringify(steps),
           existing.id,
         );
-
-      // HNSW does not support updates; rebuild from SQLite when its embedding changes (only if embeddings enabled)
-      if (
-        isEmbeddingsEnabled() &&
-        existing.embedding !== serializedEmbedding &&
-        this.vectorIndex
-      ) {
-        this.rebuildIndex();
-      }
 
       log.debug({ sequence, id: existing.id }, "Reflex existente actualizado");
       return existing.id;
@@ -504,230 +201,25 @@ export class ReflexMolecule implements IMolecule {
     const result = this.db
       .prepare(
         `INSERT INTO reflexes
-          (task_summary, sequence, steps_json, embedding, success_count, last_used, created_at, arg_templates_json, schema_versions)
-         VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+          (task_summary, sequence, steps_json, embedding, success_count, last_used, created_at, schema_versions)
+         VALUES (?, ?, ?, '', 1, ?, ?, ?)`,
       )
       .run(
         taskSummary.substring(0, 200),
         sequence,
         JSON.stringify(steps),
-        serializedEmbedding,
         Date.now(),
         Date.now(),
-        argTemplatesJson,
         schemaVersionsJson,
       );
 
     const newId = result.lastInsertRowid as number;
-
-    // Insert into vector index only if embeddings enabled
-    if (isEmbeddingsEnabled()) {
-      this.insertIntoIndex(newId, embedding);
-    }
-
     log.info({ sequence, id: newId }, "Nuevo reflex guardado");
     return newId;
   }
 
-  private findLinearCandidates(
-    embedding: Embedding,
-  ): Array<{ id: number; similarity: number }> {
-    const rows = this.db
-      .prepare(
-        "SELECT id, embedding FROM reflexes ORDER BY success_count DESC, last_used DESC",
-      )
-      .all() as Array<{ id: number; embedding: string }>;
-
-    return rows.flatMap((row) => {
-      try {
-        const candidateEmbedding = deserializeEmbedding(row.embedding);
-        if (
-          !Array.isArray(candidateEmbedding) ||
-          candidateEmbedding.length !== 384 ||
-          candidateEmbedding.some((value) => !Number.isFinite(value))
-        ) {
-          throw new TypeError(
-            "embedding must be a finite 384-dimensional array",
-          );
-        }
-
-        return [
-          {
-            id: row.id,
-            similarity: cosineSimilarity(embedding, candidateEmbedding),
-          },
-        ];
-      } catch (error: unknown) {
-        log.warn(
-          {
-            id: row.id,
-            error: error instanceof Error ? error.message : String(error),
-          },
-          "Skipping invalid reflex embedding during linear scan",
-        );
-        return [];
-      }
-    });
-  }
-
-  /**
-   * Busca el reflex más similar al embedding dado.
-   * Uses HNSW vector index when available, falls back to linear scan.
-   * Applies temporal decay and reliability boost for composite scoring.
-   *
-   * If ENABLE_EMBEDDINGS=false, returns null (use loadAllReflexes for Jev-only routing).
-   *
-   * @param embedding  - Vector del input actual
-   * @param topK       - Máximo de candidatos a evaluar (default: 5)
-   * @returns El mejor match con su similitud y modo recomendado, o null si embeddings deshabilitados
-   */
-  findSimilar(embedding: Embedding, topK: number = 5): ReflexMatch | null {
-    // If embeddings are disabled, return null — use loadAllReflexes + Jev routing instead
-    if (!isEmbeddingsEnabled()) {
-      log.debug(
-        "Embeddings deshabilitados, skipping findSimilar (use loadAllReflexes + Jev)",
-      );
-      return null;
-    }
-
-    const now = Date.now();
-    let candidates: Array<{ id: number; similarity: number }>;
-
-    if (this.vectorIndex && !this.hasUsableVectorIndex()) {
-      this.invalidateVectorIndex("mapping", "HNSW label maps are inconsistent");
-    }
-
-    if (this.hasUsableVectorIndex()) {
-      const k = Math.min(topK * 2, this.labelToId.size);
-      try {
-        const result = this.vectorIndex!.searchKnn(embedding, k);
-        const hasInvalidLabels =
-          result.neighbors.length !== result.distances.length ||
-          result.neighbors.some(
-            (label: number) =>
-              !Number.isInteger(label) || !this.labelToId.has(label),
-          ) ||
-          result.distances.some(
-            (distance: number) => !Number.isFinite(distance),
-          );
-
-        if (hasInvalidLabels) {
-          this.invalidateVectorIndex(
-            "searchKnn",
-            "HNSW search returned inconsistent labels",
-          );
-          candidates = this.findLinearCandidates(embedding);
-        } else {
-          this.vectorIndexMode = "hnsw";
-          candidates = result.neighbors.map((label: number, i: number) => ({
-            id: this.labelToId.get(label) as number,
-            similarity: 1 - result.distances[i], // cosine distance → similarity
-          }));
-        }
-      } catch (error: unknown) {
-        this.invalidateVectorIndex("searchKnn", error);
-        candidates = this.findLinearCandidates(embedding);
-      }
-    } else {
-      this.vectorIndexMode = "linear";
-      candidates = this.findLinearCandidates(embedding);
-    }
-
-    if (candidates.length === 0) {
-      this.perf?.recordReflexQuery("miss");
-      return null;
-    }
-
-    // Fetch metadata for candidates
-    const ids = candidates.map((c) => c.id);
-    const placeholders = ids.map(() => "?").join(",");
-    const metaRows = this.db
-      .prepare(
-        `SELECT id, task_summary, sequence, steps_json, success_count, failure_count, 
-                last_used, arg_templates_json, schema_versions
-         FROM reflexes WHERE id IN (${placeholders})`,
-      )
-      .all(...ids) as Array<{
-      id: number;
-      task_summary: string;
-      sequence: string;
-      steps_json: string;
-      success_count: number;
-      failure_count: number;
-      last_used: number;
-      arg_templates_json: string | null;
-      schema_versions: string | null;
-    }>;
-
-    const metaMap = new Map(metaRows.map((r) => [r.id, r]));
-
-    // Compute composite scores
-    const scored = candidates
-      .filter((c) => metaMap.has(c.id))
-      .map((c) => {
-        const meta = metaMap.get(c.id)!;
-        const decay = ReflexMolecule.temporalDecay(meta.last_used, now);
-        const reliability = ReflexMolecule.reliabilityBoost(
-          meta.success_count,
-          meta.failure_count,
-        );
-        const compositeScore = c.similarity * decay * reliability;
-        return { ...c, meta, compositeScore };
-      })
-      .sort((a, b) => b.compositeScore - a.compositeScore)
-      .slice(0, topK);
-
-    const best = scored[0];
-    if (!best) {
-      this.perf?.recordReflexQuery("miss");
-      return null;
-    }
-
-    const record: ReflexRecord = {
-      id: best.meta.id,
-      taskSummary: best.meta.task_summary,
-      sequence: best.meta.sequence,
-      steps: JSON.parse(best.meta.steps_json) as ReflexStep[],
-      successCount: best.meta.success_count,
-      failureCount: best.meta.failure_count,
-      lastUsed: best.meta.last_used,
-      argTemplates: best.meta.arg_templates_json
-        ? deserializeArgTemplates(best.meta.arg_templates_json)
-        : null,
-      schemaVersions: best.meta.schema_versions
-        ? JSON.parse(best.meta.schema_versions)
-        : null,
-      similarity: best.similarity,
-      compositeScore: best.compositeScore,
-    };
-
-    // Sin umbral de modo: la búsqueda devuelve una pista. La decisión de ejecutar la toma el orquestador.
-    const mode: ReflexMatch["mode"] = "hint";
-
-    // Record metrics
-    this.perf?.recordReflexQuery(mode, best.similarity);
-
-    log.debug(
-      {
-        sequence: record.sequence,
-        similarity: best.similarity.toFixed(3),
-        compositeScore: best.compositeScore.toFixed(3),
-        mode,
-      },
-      "Reflex encontrado",
-    );
-
-    return {
-      record,
-      similarity: best.similarity,
-      compositeScore: best.compositeScore,
-      mode,
-    };
-  }
-
   /**
    * Incrementa el contador de fallos de un reflex.
-   * Se llama cuando un reflex ejecutado directamente produjo un resultado incorrecto.
    */
   markFailed(id: number): void {
     this.db
@@ -738,7 +230,7 @@ export class ReflexMolecule implements IMolecule {
   }
 
   /**
-   * Incrementa el contador de éxitos y actualiza last_used.
+   * Incrementa el contador de ejecuciones y actualiza last_used.
    */
   markSuccess(id: number): void {
     this.db
@@ -754,8 +246,7 @@ export class ReflexMolecule implements IMolecule {
       this.db
         .prepare(
           `SELECT id, task_summary, sequence, steps_json,
-                  success_count, failure_count, last_used,
-                  arg_templates_json, schema_versions
+                  success_count, failure_count, last_used, schema_versions
            FROM reflexes
            ORDER BY success_count DESC`,
         )
@@ -767,7 +258,6 @@ export class ReflexMolecule implements IMolecule {
         success_count: number;
         failure_count: number;
         last_used: number;
-        arg_templates_json: string | null;
         schema_versions: string | null;
       }>
     ).map((row) => ({
@@ -778,9 +268,6 @@ export class ReflexMolecule implements IMolecule {
       successCount: row.success_count,
       failureCount: row.failure_count,
       lastUsed: row.last_used,
-      argTemplates: row.arg_templates_json
-        ? deserializeArgTemplates(row.arg_templates_json)
-        : null,
       schemaVersions: row.schema_versions
         ? JSON.parse(row.schema_versions)
         : null,
@@ -788,19 +275,14 @@ export class ReflexMolecule implements IMolecule {
   }
 
   /**
-   * Loads ALL reflexes from the database without embeddings filtering.
-   * Used for single-phase Jev noul routing (no pre-filtering).
-   *
-   * Returns all reflexes sorted by success count descending.
-   *
-   * @returns All reflex records unsorted by similarity, ready for Jev evaluation
+   * Carga todos los reflexes guardados, sin filtrar, para la evaluación de Jev.
+   * @returns Los registros ordenados por uso reciente
    */
   loadAllReflexes(): ReflexRecord[] {
     const rows = this.db
       .prepare(
         `SELECT id, task_summary, sequence, steps_json,
-                success_count, failure_count, last_used,
-                arg_templates_json, schema_versions
+                success_count, failure_count, last_used, schema_versions
          FROM reflexes
          ORDER BY success_count DESC, last_used DESC`,
       )
@@ -812,14 +294,8 @@ export class ReflexMolecule implements IMolecule {
       success_count: number;
       failure_count: number;
       last_used: number;
-      arg_templates_json: string | null;
       schema_versions: string | null;
     }>;
-
-    log.debug(
-      { count: rows.length },
-      "Loaded all reflexes for Jev evaluation (single-phase routing)",
-    );
 
     return rows.map((row) => ({
       id: row.id,
@@ -829,9 +305,6 @@ export class ReflexMolecule implements IMolecule {
       successCount: row.success_count,
       failureCount: row.failure_count,
       lastUsed: row.last_used,
-      argTemplates: row.arg_templates_json
-        ? deserializeArgTemplates(row.arg_templates_json)
-        : null,
       schemaVersions: row.schema_versions
         ? JSON.parse(row.schema_versions)
         : null,
@@ -841,9 +314,6 @@ export class ReflexMolecule implements IMolecule {
   /** Elimina un reflex por ID (para limpieza manual) */
   remove(id: number): boolean {
     const result = this.db.prepare("DELETE FROM reflexes WHERE id = ?").run(id);
-    if (result.changes > 0 && this.vectorIndex) {
-      this.rebuildIndex();
-    }
     return result.changes > 0;
   }
 }
