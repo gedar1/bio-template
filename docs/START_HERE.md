@@ -5,8 +5,8 @@ Este checkout mínimo coloca la extensión de dominio dentro de `packages/core/s
 ## 1. Verifica el contrato
 
 ```bash
-npm install
-npm run validate-template
+pnpm install
+pnpm run validate-template
 ```
 
 El validador comprueba solo archivos estructurales, JSON y configuración mínima. También exige el composition root y el entrypoint MCP del template. No requiere `.env`, credenciales, bases SQLite, `data/`, `dist/` ni datos de negocio.
@@ -71,9 +71,9 @@ Si `hnswlib-node` no tiene binding nativo compatible, ReflexMolecule usa búsque
 Usa Vitest y recursos temporales para moléculas. Comprueba `name`/`version`, ejecuta `initialize()` y libera siempre con `dispose()`. No uses APIs externas ni credenciales reales en tests.
 
 ```bash
-npm run validate-template
-npm test
-npm run build:ts
+pnpm run validate-template
+pnpm test
+pnpm run build:ts
 ```
 
 Para cambios de comportamiento del motor, consulta también `.kiro/steering/biocore-testing-validation.md` y ejecuta la verificación completa desde `bio-core`.
@@ -83,7 +83,7 @@ Para cambios de comportamiento del motor, consulta también `.kiro/steering/bioc
 No edites manualmente el motor para resolver una diferencia permanente. Desde `bio-core`, la fuente de verdad:
 
 ```bash
-npm run sync-template
+pnpm run sync-template
 ```
 
 El script resuelve `BIO_TEMPLATE_PATH` o `../bio-template`. Copia archivos normales, no symlinks, conserva `domain-*`, `ExampleMolecule.ts` y cualquier archivo de `.kiro/steering` o `.kiro/hooks` cuyo nombre comience por `template-`. También sincroniza el validador en `scripts/`.
@@ -91,12 +91,12 @@ El script resuelve `BIO_TEMPLATE_PATH` o `../bio-template`. Copia archivos norma
 ## Checklist
 
 ```
-□ npm run validate-template pasa
+□ pnpm run validate-template pasa
 □ Personalicé ExampleMolecule.ts o creé una molécula con IMolecule
 □ Actualicé domain-registry.json y domain-profile.ts
 □ El agentFile existe y no contiene secretos
 □ Registré las tools en applicationComposition.ts y no en un switch de CellServer
 □ Añadí tests sin APIs externas, .env, BDs ni datos reales
-□ npm test y npm run build:ts pasan
+□ pnpm test y pnpm run build:ts pasan
 □ La sincronización se ejecuta desde bio-core y conserva template-*
 ```

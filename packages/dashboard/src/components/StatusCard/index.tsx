@@ -1,4 +1,4 @@
-interface Props {
+export interface Props {
   title: string;
   value: string | number;
   status?: "ok" | "degraded" | "down";

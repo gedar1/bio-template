@@ -2,12 +2,13 @@ import { useState, useRef, useEffect } from "react";
 import { Brain, Zap } from "lucide-react";
 import { postChatStream } from "../../hooks/useApi";
 import { StepIndicator } from "../StepIndicator";
-import { QuickTemplates, type TemplateExecutionResult } from "./QuickTemplates";
+import { QuickTemplates } from "./QuickTemplates";
 import type {
   ChatPanelProps,
   ChatMessage,
   ResponseSource,
-} from "./ChatPanel.types";
+  TemplateExecutionResult,
+} from "../../types";
 
 const REFLEX_PATTERNS = [
   "tarea completada via reflex",

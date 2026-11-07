@@ -1,15 +1,16 @@
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { createLogger } from "../../config/logger.js";
+import { getDeploymentMode } from "../../config/deploymentMode.js";
 
 const log = createLogger("PlatformAuth");
 
 // ─── Zod Schemas ────────────────────────────────────────────────────────────
 
 /** JWT payload schema for platform tokens */
-export const PlatformTokenPayloadSchema = z.object({
+const PlatformTokenPayloadSchema = z.object({
   sub: z.string(),
-  role: z.literal("super_admin"),
+  role: z.literal("platform_owner"),
   iat: z.number(),
   exp: z.number(),
 });
@@ -32,15 +33,17 @@ const TOKEN_EXPIRATION_SECONDS = 24 * 60 * 60;
 
 /**
  * Checks if the Platform API is enabled.
- * Returns true if `PLATFORM_SECRET` environment variable is set and non-empty.
+ * Requires `PLATFORM_SECRET` set and non-empty, and DEPLOYMENT_MODE=studio.
+ * In "single" mode the platform API is always disabled (503).
  */
 export function isPlatformEnabled(): boolean {
+  if (getDeploymentMode() !== "studio") return false;
   const secret = process.env.PLATFORM_SECRET;
   return typeof secret === "string" && secret.length > 0;
 }
 
 /**
- * Issues a JWT token for platform super_admin access.
+ * Issues a JWT token for platform platform_owner access.
  * Validates that the provided secret matches PLATFORM_SECRET env var,
  * then signs with HMAC-SHA256.
  *
@@ -57,7 +60,7 @@ export function issuePlatformToken(secret: string): string | null {
 
   const payload = {
     sub: "platform-admin",
-    role: "super_admin" as const,
+    role: "platform_owner" as const,
   };
 
   const token = jwt.sign(payload, platformSecret, {
@@ -113,10 +116,10 @@ export function validatePlatformToken(
       return { error: "Invalid token payload structure", status: 401 };
     }
 
-    // Verify the role is super_admin
-    if (result.data.role !== "super_admin") {
+    // Verify the role is platform_owner
+    if (result.data.role !== "platform_owner") {
       return {
-        error: "Insufficient role: super_admin required",
+        error: "Insufficient role: platform_owner required",
         status: 403,
       };
     }

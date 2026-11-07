@@ -7,6 +7,32 @@ fileMatchPattern: "**/packages/core/src/**"
 
 Fuente completa: #[[file:docs/biocore/biocore-glossary.md]]
 
+## Jev (TypeSafe System One)
+
+Model Context Protocol (MCP) integration con TypeSafe/Jev para detectar cadenas multi-paso automáticamente.
+
+- **Archivo:** `atoms/reflexSelector.ts` (jevEvaluateAll function)
+- **Función principal:** Analiza 3 preguntas en paralelo (Sistema One) para detectar secuencias de herramientas
+- **Preguntas:** primer paso y multi-paso (llamada 1, catálogo completo), siguiente paso (llamada 2, con el primero como dato)
+- **Salida:** `{ execution_chain: ["scrape_url", "database_insert"], confidence: 1.0, is_multi_step: true }`
+- **Consumo:** ~550-700 input tokens y ~150 output tokens por llamada (cifras de los logs). Dos llamadas por mensaje
+- **Beneficio:** 0 tokens LLM si confidence ≥ threshold
+- **Integración:** `UnifiedCortex.runConversation`, después de `queryReflex`. Flujo completo en [[biocore-jev-pre-routing]]
+- **Relacionado:** [[biocore-jev-pre-routing]], [[biocore-execution-flow]]
+
+## ExecutionChainRunner (Atom)
+
+Ejecutor de cadenas multi-paso detectadas por Jev. Ejecuta herramientas secuencialmente, pasando outputs al siguiente paso.
+
+- **Archivo:** `atoms/executionChainRunner.ts`
+- **Clase:** `ExecutionChainRunner`
+- **Interfaz:** `ExecutionContext` (chainId, userMessage, tenantId, steps, intermediateOutputs)
+- **Métodos clave:** `executeChain()`, `buildStepInputs()`, `getChainResult()`
+- **Registry:** TOOL_REGISTRY con 56 tools mapeadas a moléculas
+- **Ejecución:** el gate `scrape_url→db_insert` no lo usa; ejecuta con `routeStimulus` y `executeAction`. La integración con `CellServer` sigue pendiente
+- **Persistencia:** PASO 9 - guarda reflex si ejecución exitosa
+- **Relacionado:** [[biocore-jev-pre-routing]], [[biocore-execution-flow]]
+
 ## Cortex
 
 El cerebro del sistema. Selecciona qué modelo LLM usar (Gemini/Claude/NVIDIA), ejecuta loops de chat y maneja Circuit Breakers para fallback automático entre 3 proveedores.
@@ -82,7 +108,7 @@ Archivo JSON que define qué tipos de célula existen, qué herramientas tiene c
 Sistema de memoria procedural que aprende secuencias exitosas de herramientas y las reutiliza sin LLM. Usa embeddings semánticos locales para comparar intención, no palabras exactas.
 
 - **Archivo:** `molecules/ReflexMolecule.ts`
-- **Modos:** REFLEX (ejecución directa, 0 tokens), HINT (inyecta contexto al LLM), NORMAL (LLM completo)
+- **Modo:** solo HINT. Jev sugiere la cadena y el orquestador decide. El modo REFLEX (ejecución directa por similitud y conteo de éxitos) se eliminó: ver [[biocore-decisions]], decisión 12
 - **Relacionado:** [[biocore-architecture]], [[biocore-execution-flow]]
 
 ## ArgTemplate

@@ -7,7 +7,7 @@ import {
   hasMinimumRole,
 } from "../../utils/roleFilter";
 
-interface RoleGuardProps {
+export interface RoleGuardProps {
   /** Panel ID to check access for */
   panel?: string;
   /** Action ID to check permission for */

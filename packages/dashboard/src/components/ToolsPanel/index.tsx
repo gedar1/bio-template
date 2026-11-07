@@ -7,20 +7,20 @@ import { Tooltip } from "../Tooltip";
 import { groupByCategory } from "../../utils/groupByCategory";
 import type { ToolInputSchema } from "../../types/dashboard";
 
-interface Tool {
+export interface Tool {
   name: string;
   description?: string;
   category?: string;
   inputSchema?: ToolInputSchema;
 }
 
-interface ToolsData {
+export interface ToolsData {
   tools: Tool[];
   cellType: string;
   mutationState: string;
 }
 
-interface RegistryCellOption {
+export interface RegistryCellOption {
   readonly type: string;
   readonly description: string;
 }
@@ -200,7 +200,9 @@ export function ToolsPanel({ tenantId }: Readonly<{ tenantId: string }>) {
                     key={tool.name}
                     tool={tool}
                     isSelected={selectedTool?.name === tool.name}
-                    canInvoke={role === "admin" || role === "super_admin"}
+                    canInvoke={
+                      role === "tenant_owner" || role === "platform_owner"
+                    }
                     onSelect={() => {
                       if (selectedTool?.name === tool.name) {
                         setSelectedTool(null);
@@ -256,7 +258,7 @@ function MutationStateBadge({ state }: Readonly<{ state: string }>) {
   return <span className={`text-xs ${config.color}`}>● {config.label}</span>;
 }
 
-interface ToolRowProps {
+export interface ToolRowProps {
   readonly tool: Tool & { category: string };
   readonly isSelected: boolean;
   readonly canInvoke: boolean;

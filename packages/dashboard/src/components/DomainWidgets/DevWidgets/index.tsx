@@ -1,7 +1,9 @@
 import { ReflexPanel } from "../../ReflexPanel";
 import { ErrorBoundary } from "../../ErrorBoundary";
-import type { DevWidgetsProps } from "./DevWidgets.types";
 
+export interface DevWidgetsProps {
+  tenantId: string;
+}
 /**
  * Widgets específicos para el perfil "dev" (desarrollo de software).
  * Muestra reflexes, herramientas y métricas de desarrollo.

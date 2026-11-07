@@ -1,4 +1,4 @@
-import type { TooltipProps, TooltipPosition } from "./Tooltip.types";
+import type { TooltipPosition, TooltipProps } from "../../types";
 
 const positionClasses: Record<TooltipPosition, string> = {
   top: "bottom-full left-1/2 -translate-x-1/2 mb-2",

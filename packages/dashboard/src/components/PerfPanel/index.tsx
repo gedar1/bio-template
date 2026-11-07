@@ -8,7 +8,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-interface PerfSummary {
+export interface PerfSummary {
   [operation: string]: {
     count: number;
     avgMs: number;
@@ -17,7 +17,7 @@ interface PerfSummary {
   };
 }
 
-export function PerfPanel({ tenantId }: { tenantId: string }) {
+export function PerfPanel({ tenantId }: Readonly<{ tenantId: string }>) {
   const { data, loading } = useApi<PerfSummary>(
     `/api/perf?tenantId=${tenantId}`,
     10000,

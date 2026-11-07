@@ -1,6 +1,6 @@
 import { RestaurantWidgets } from "./RestaurantWidgets";
 import { DevWidgets } from "./DevWidgets";
-import type { DomainWidgetsProps } from "./DomainWidgets.types";
+import type { DomainWidgetsProps } from "../../types";
 
 /**
  * Renderiza los widgets específicos del dominio según el perfil del tenant.

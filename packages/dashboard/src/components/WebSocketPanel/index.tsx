@@ -4,13 +4,11 @@ import { useApi } from "../../hooks/useApi";
 import { useRole } from "../../context/RoleContext";
 import { RoleGuard } from "../RoleGuard";
 import type {
-  WebSocketServerInfo,
-  WebSocketClientInfo,
-} from "../../types/dashboard";
-import type {
-  WebSocketPanelProps,
   WebSocketApiResponse,
-} from "./WebSocketPanel.types";
+  WebSocketClientInfo,
+  WebSocketPanelProps,
+  WebSocketServerInfo,
+} from "../../types";
 
 /**
  * WebSocketPanel — displays active servers with port/status/client count,
@@ -224,7 +222,7 @@ export const WebSocketPanel: React.FC<WebSocketPanelProps> = ({ tenantId }) => {
 
 // ─── Sub-Components ─────────────────────────────────────────────────────────
 
-interface ServerCardProps {
+export interface ServerCardProps {
   server: WebSocketServerInfo;
   onDisconnect: (clientId: string) => void;
   onStop: () => void;
@@ -284,7 +282,7 @@ function ServerCard({
             </button>
           )}
           {/* Stop server control (Req 9.4) */}
-          {(role === "admin" || role === "super_admin") &&
+          {(role === "tenant_owner" || role === "platform_owner") &&
             server.status === "running" && (
               <button
                 type="button"
@@ -304,7 +302,9 @@ function ServerCard({
             <ClientRow
               key={client.id}
               client={client}
-              canDisconnect={role === "admin" || role === "super_admin"}
+              canDisconnect={
+                role === "tenant_owner" || role === "platform_owner"
+              }
               onDisconnect={() => onDisconnect(client.id)}
             />
           ))}
@@ -322,7 +322,7 @@ function ServerCard({
   );
 }
 
-interface ClientRowProps {
+export interface ClientRowProps {
   client: WebSocketClientInfo;
   canDisconnect: boolean;
   onDisconnect: () => void;

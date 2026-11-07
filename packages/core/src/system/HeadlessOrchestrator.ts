@@ -96,7 +96,7 @@ export interface HeadlessTask {
  */
 export interface HeadlessResult {
   /** Estrategia que resolvió la tarea */
-  mode: "reflex" | "jev" | "explicit";
+  mode: "jev" | "explicit";
   /** Resultados de cada herramienta ejecutada */
   outputs: string[];
   /** Tipo de célula activada (o "multiple" si hubo más de una en secuencia) */
@@ -636,17 +636,6 @@ export class HeadlessOrchestrator extends BaseOrchestrator {
 
     // ── ESTRATEGIA 1: Reflex ──────────────────────────────────────────────────
     const reflexMatch = await this.queryReflex(task.instruction);
-
-    if (reflexMatch?.mode === "reflex") {
-      this.log.info("HeadlessOrchestrator: resolviendo via REFLEX (0 tokens)");
-      const outputs = await this.executeReflex(reflexMatch);
-      return {
-        mode: "reflex",
-        outputs,
-        cellType: this.extractCellTypeFromReflex(reflexMatch),
-        jevTokens: 0,
-      };
-    }
 
     // ── ESTRATEGIA 2: Routing Jev ─────────────────────────────────────────────
     const historyCtx: RouterHistoryEntry[] = task.historyContext ?? [];

@@ -59,7 +59,7 @@ export function setupWebSocketRoutes(
   health.registerData(
     "websocket/broadcast",
     async (body?: Record<string, unknown>) => {
-      const roleError = checkRole("admin");
+      const roleError = checkRole("tenant_owner");
       if (roleError) return roleError;
 
       const tenantId = (body?.tenantId as string) || "default";
@@ -90,7 +90,7 @@ export function setupWebSocketRoutes(
   health.registerData(
     "websocket/disconnect",
     async (body?: Record<string, unknown>) => {
-      const roleError = checkRole("admin");
+      const roleError = checkRole("tenant_owner");
       if (roleError) return roleError;
 
       const tenantId = (body?.tenantId as string) || "default";

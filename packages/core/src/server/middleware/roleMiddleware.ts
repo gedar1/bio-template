@@ -8,11 +8,25 @@ const log = createLogger("RoleMiddleware");
  * Obtiene el rol actual del dashboard desde la variable de entorno.
  * Si no está configurado, retorna "viewer" por defecto.
  */
+/** Valores anteriores de DASHBOARD_ROLE, aceptados con aviso para no romper los .env existentes */
+const LEGACY_DASHBOARD_ROLES: Record<string, UserRole> = {
+  super_admin: "platform_owner",
+  admin: "tenant_owner",
+};
+
 export function getCurrentRole(): UserRole {
   const envRole = process.env.DASHBOARD_ROLE?.toLowerCase();
+  if (envRole && envRole in LEGACY_DASHBOARD_ROLES) {
+    const mapped = LEGACY_DASHBOARD_ROLES[envRole];
+    log.warn(
+      { envRole, mapped },
+      "DASHBOARD_ROLE usa un nombre anterior; actualízalo al nuevo",
+    );
+    return mapped;
+  }
   if (
-    envRole === "super_admin" ||
-    envRole === "admin" ||
+    envRole === "platform_owner" ||
+    envRole === "tenant_owner" ||
     envRole === "operator" ||
     envRole === "viewer"
   ) {
@@ -29,10 +43,7 @@ export function getCurrentRole(): UserRole {
  * @param requiredRole - Rol mínimo requerido para la acción
  * @returns true si el usuario tiene permisos suficientes
  */
-export function hasPermission(
-  currentRole: UserRole,
-  requiredRole: UserRole,
-): boolean {
+function hasPermission(currentRole: UserRole, requiredRole: UserRole): boolean {
   return ROLE_HIERARCHY[currentRole] >= ROLE_HIERARCHY[requiredRole];
 }
 

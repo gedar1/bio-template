@@ -26,6 +26,7 @@ import Database from "better-sqlite3";
 import { z } from "zod";
 import { createLogger } from "../config/logger.js";
 import { MoleculeError } from "../errors.js";
+import { resolveDataPath } from "../atoms/paths.js";
 import type { IMolecule } from "./interfaces/IMolecule.js";
 
 const log = createLogger("ExampleMolecule");
@@ -77,7 +78,9 @@ export class ExampleMolecule implements IMolecule {
   private readonly dbPath: string;
 
   constructor(
-    dbPath: string = process.env.DATABASE_PATH ?? "./data/biocore.db",
+    dbPath: string = resolveDataPath(
+      process.env.DATABASE_PATH ?? "./data/biocore.db",
+    ),
   ) {
     this.dbPath = dbPath;
   }

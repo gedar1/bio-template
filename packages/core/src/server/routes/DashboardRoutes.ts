@@ -2,14 +2,25 @@ import { HealthServer } from "../HealthServer.js";
 import type { TenantManager } from "../TenantManager.js";
 import { summarizeToolResult } from "../../atoms/toolResultFormatter.js";
 import { resolveRequestAuth } from "../middleware/tenantAuth.js";
+import {
+  resolveTenantAccess,
+  resolvePlatformAccess,
+} from "../middleware/requestAccess.js";
 import type { TenantAuthService } from "../services/TenantAuthService.js";
+import {
+  getDeploymentMode,
+  getSingleTenantId,
+} from "../../config/deploymentMode.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /**
  * Resolves the effective tenant_id for a request.
  *
- * Priority:
+ * In "single" deployment mode there is only one tenant: it always resolves to
+ * TENANT_ID and ignores any tenantId sent by the client.
+ *
+ * Priority (studio):
  * 1. If _authHeader is present and resolves to a tenant_jwt, use that tenant_id.
  * 2. Otherwise, fall back to body.tenantId (backward compat with API_SECRET auth).
  * 3. Default to "default" if nothing is specified.
@@ -18,6 +29,10 @@ function resolveTenantId(
   params: Record<string, unknown>,
   tenantAuthService?: TenantAuthService,
 ): string {
+  if (getDeploymentMode() === "single") {
+    return getSingleTenantId();
+  }
+
   const authHeader = params._authHeader as string | undefined;
 
   if (authHeader && tenantAuthService) {
@@ -60,8 +75,26 @@ export function setupDashboardRoutes(
     }
   });
 
+  // El historial de chat es privado: solo el propio tenant (JWT de tenant) puede leerlo.
+  // No se usa body.tenantId ni tokens de plataforma/API_SECRET, para que un admin
+  // o un token compartido no lean conversaciones de otros clientes.
   health.registerData("history", async (body?: any) => {
-    const tenantId = resolveTenantId(body || {}, tenantAuthService);
+    const authHeader = body?._authHeader as string | undefined;
+    const ctx =
+      authHeader && tenantAuthService
+        ? resolveRequestAuth(authHeader, tenantAuthService)
+        : null;
+
+    if (!ctx || "error" in ctx || ctx.auth_type !== "tenant_jwt") {
+      return {
+        error: "Historial privado: requiere token de tenant",
+        code: "ACCESS_DENIED",
+        messages: [],
+        count: 0,
+      };
+    }
+
+    const tenantId = ctx.tenant_id;
     try {
       const tenant = await tenantManager.getTenant(tenantId);
       const messages = tenant.cortex.getHistory();
@@ -76,13 +109,31 @@ export function setupDashboardRoutes(
     }
   });
 
-  health.registerData("tenants", async () => {
+  // Lista de clientes: solo en modo studio y solo para super admin de plataforma
+  // o para la API key del despliegue (api_secret). Nunca sin credenciales.
+  health.registerData("tenants", async (body?: any) => {
+    if (getDeploymentMode() === "single") {
+      return { tenants: [], total: 0 };
+    }
+
+    const access = resolvePlatformAccess(body || {});
+    if (!access.ok) {
+      return {
+        error: "Lista de clientes requiere credenciales de plataforma",
+        code: access.code,
+        tenants: [],
+        total: 0,
+      };
+    }
+
     return { tenants: tenantManager.listTenants(), total: tenantManager.size };
   });
 
   health.registerData("chat", async (body?: any) => {
+    const access = resolveTenantAccess(body || {}, tenantAuthService);
+    if (!access.ok) return { error: access.error, code: access.code };
     if (!body?.message) return { error: "message requerido" };
-    const tenantId = resolveTenantId(body || {}, tenantAuthService);
+    const tenantId = access.tenantId;
     try {
       const response = await tenantManager.chat(tenantId, body.message);
       return { tenantId, response };
@@ -125,11 +176,13 @@ export function setupDashboardRoutes(
 
   // ─── Ejecución directa de template (sin LLM) ───────────────────────────
   health.registerData("template/execute", async (body?: any) => {
+    const access = resolveTenantAccess(body || {}, tenantAuthService);
+    if (!access.ok) return { error: access.error, code: access.code };
     if (!body?.steps || !Array.isArray(body.steps)) {
       return { error: "steps requerido (array de acciones)" };
     }
 
-    const tenantId = resolveTenantId(body || {}, tenantAuthService);
+    const tenantId = access.tenantId;
     const steps: string[] = body.steps;
     const args: Record<string, unknown> = body.args || {};
     const templateName: string = body.templateName || "Template";
@@ -141,6 +194,8 @@ export function setupDashboardRoutes(
       for (const step of steps) {
         if (step.startsWith("mutate:")) {
           const cellType = step.replace("mutate:", "");
+          // Sequential on purpose: each mutation must complete before the next step runs.
+          // eslint-disable-next-line no-await-in-loop
           await tenant.cortex.executeAction("stimulate_differentiation", {
             type: cellType,
           });

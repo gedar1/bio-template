@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useApi } from "../../hooks/useApi";
 import { buildHierarchy, countUniqueTools } from "../../utils/registryHelpers";
 import type { RegistryCellType, HierarchyNode } from "../../types/dashboard";
-import type { RegistryViewerProps } from "./RegistryViewer.types";
+import type { RegistryViewerProps } from "../../types";
 
 interface RegistryApiResponse {
   cells: RegistryCellType[];
@@ -59,7 +59,7 @@ export const RegistryViewer: React.FC<RegistryViewerProps> = () => {
       </div>
 
       {/* Hierarchy tree (Req 8.1, 8.2) */}
-      <div className="space-y-1 max-h-[500px] overflow-y-auto">
+      <div className="space-y-1 max-h-125 overflow-y-auto">
         {hierarchy.length === 0 ? (
           <div className="text-gray-500 text-sm text-center py-8">
             Registry vacío. No hay tipos de célula configurados.
