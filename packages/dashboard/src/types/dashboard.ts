@@ -26,7 +26,7 @@ export type CellType =
 
 // ─── Role System ────────────────────────────────────────────────────────────
 
-export type UserRole = "super_admin" | "admin" | "operator" | "viewer";
+export type UserRole = "platform_owner" | "tenant_owner" | "operator" | "viewer";
 
 export interface RoleConfig {
   role: UserRole;

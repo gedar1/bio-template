@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
-import type { ResizableChatProps } from "./ResizableChat.types";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { ChatPanel } from "../ChatPanel";
+import type { ResizableChatProps } from "../../types";
 
 export const ResizableChat: React.FC<ResizableChatProps> = ({ tenantId }) => {
   const [width, setWidth] = useState(320);

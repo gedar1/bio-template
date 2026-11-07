@@ -6,6 +6,15 @@ import {
   isPlatformEnabled,
   PlatformLoginSchema,
 } from "../middleware/platformAuth.js";
+import { TenantRoleSchema } from "../services/TenantAuthService.js";
+
+/** Rol máximo de la API key de un tenant. Por defecto 'tenant_owner' (dueño del tenant). */
+function parseApiKeyRole(
+  value: unknown,
+): { ok: true; role: "viewer" | "operator" | "tenant_owner" } | { ok: false } {
+  const result = TenantRoleSchema.safeParse(value ?? "tenant_owner");
+  return result.success ? { ok: true, role: result.data } : { ok: false };
+}
 import { successEnvelope, errorEnvelope } from "../utils/apiEnvelope.js";
 import {
   CreateTenantSchema,
@@ -107,6 +116,17 @@ async function handleCreateTenant(
     );
   }
 
+  const keyRole = parseApiKeyRole(params?.api_key_role);
+  if (!keyRole.ok) {
+    return platformResponse(
+      422,
+      errorEnvelope(
+        "VALIDATION_ERROR",
+        "api_key_role debe ser 'viewer', 'operator' o 'tenant_owner'",
+      ),
+    );
+  }
+
   if (registry.exists(parseResult.data.tenant_id)) {
     return platformResponse(
       409,
@@ -125,7 +145,7 @@ async function handleCreateTenant(
     let apiKey: string | undefined;
     if (tenantAuthService) {
       const { raw, hash } = await tenantAuthService.generateApiKey();
-      registry.setApiKeyHash(record.tenant_id, hash);
+      registry.setApiKeyHash(record.tenant_id, hash, keyRole.role);
       apiKey = raw;
     }
 
@@ -138,7 +158,11 @@ async function handleCreateTenant(
 
     return platformResponse(
       201,
-      successEnvelope({ ...record, api_key: apiKey }),
+      successEnvelope({
+        ...record,
+        api_key: apiKey,
+        api_key_role: keyRole.role,
+      }),
     );
   } catch (error: any) {
     if (error.message?.includes("already exists")) {
@@ -372,17 +396,36 @@ async function handleRegenerateKey(
     );
   }
 
+  const keyRole = parseApiKeyRole(params?.api_key_role);
+  if (!keyRole.ok) {
+    return platformResponse(
+      422,
+      errorEnvelope(
+        "VALIDATION_ERROR",
+        "api_key_role debe ser 'viewer', 'operator' o 'tenant_owner'",
+      ),
+    );
+  }
+
   try {
-    const { raw: newRaw } = await tenantAuthService.regenerateApiKey(tenantId);
+    const { raw: newRaw } = await tenantAuthService.regenerateApiKey(
+      tenantId,
+      keyRole.role,
+    );
 
     const actor = getActor(params);
     auditLogger.log("tenant.regenerate_key", actor, tenantId, {
       display_name: existing.display_name,
+      api_key_role: keyRole.role,
     });
 
     return platformResponse(
       200,
-      successEnvelope({ tenant_id: tenantId, api_key: newRaw }),
+      successEnvelope({
+        tenant_id: tenantId,
+        api_key: newRaw,
+        api_key_role: keyRole.role,
+      }),
     );
   } catch (error: any) {
     log.error({ error }, "Failed to regenerate API key");
@@ -738,7 +781,7 @@ function handleAcknowledgeAlert(
  *   POST /api/platform/alerts/acknowledge       — Acknowledge alert (requires alert_id)
  *   POST /api/platform/semantic_route           — Semantic routing for user message matching
  *
- * All endpoints except login require super_admin JWT authentication.
+ * All endpoints except login require platform_owner JWT authentication.
  * All responses use the API envelope format.
  *
  * The handler functions return PlatformResponse objects containing both the
@@ -871,7 +914,7 @@ export function setupPlatformRoutes(
   });
 
   // ─── POST /api/platform/tenants/regenerate-key ────────────────────────────
-  // Regenerates the API key for an existing tenant (super_admin only)
+  // Regenerates the API key for an existing tenant (platform_owner only)
   health.registerData(
     "platform/tenants/regenerate-key",
     async (params?: any) => {

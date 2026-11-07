@@ -5,7 +5,7 @@
 
 // ─── Role System ────────────────────────────────────────────────────────────
 
-export type UserRole = "super_admin" | "admin" | "operator" | "viewer";
+export type UserRole = "platform_owner" | "tenant_owner" | "operator" | "viewer";
 
 export interface RoleConfig {
   role: UserRole;
@@ -13,10 +13,10 @@ export interface RoleConfig {
   actions: string[];
 }
 
-/** Role hierarchy: super_admin > admin > operator > viewer */
+/** Role hierarchy: platform_owner > admin > operator > viewer */
 export const ROLE_HIERARCHY: Record<UserRole, number> = {
-  super_admin: 4,
-  admin: 3,
+  platform_owner: 4,
+  tenant_owner: 3,
   operator: 2,
   viewer: 1,
 };

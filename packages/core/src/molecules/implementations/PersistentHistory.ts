@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { createLogger } from "../../config/logger.js";
 import type { HistoryEntry } from "../HistoryMolecule.js";
 import type { MolecularGen } from "../MolecularGen.js";
+import { resolveDataPath } from "../../atoms/paths.js";
 
 const log = createLogger("PersistentHistory");
 
@@ -14,7 +15,9 @@ export class PersistentHistory implements MolecularGen {
   readonly db: Database.Database;
 
   constructor(
-    dbPath: string = process.env.DATABASE_PATH || "./data/biocore.db",
+    dbPath: string = resolveDataPath(
+      process.env.DATABASE_PATH || "./data/biocore.db",
+    ),
   ) {
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");

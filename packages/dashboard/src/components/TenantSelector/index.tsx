@@ -1,17 +1,20 @@
 import { useState } from "react";
 import { useApi } from "../../hooks/useApi";
 
-interface TenantsData {
+export interface TenantsData {
   tenants: Array<{ id: string; idleSeconds: number }>;
   total: number;
 }
 
-interface Props {
+export interface TenantSelectorProps {
   current: string;
   onChange: (id: string) => void;
 }
 
-export function TenantSelector({ current, onChange }: Props) {
+export function TenantSelector({
+  current,
+  onChange,
+}: Readonly<TenantSelectorProps>) {
   const [newId, setNewId] = useState("");
   const { data } = useApi<TenantsData>("/api/tenants", 5000);
 

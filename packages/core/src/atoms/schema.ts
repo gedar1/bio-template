@@ -21,6 +21,8 @@ function cloneJsonSchema(value: unknown, path: string): JSONSchemaObject {
     "additionalProperties",
   ]);
   for (const key of Object.keys(value)) {
+    // Metadato que añade el conversor Zod a JSON Schema; no afecta la validación.
+    if (key === "$schema") continue;
     if (!allowed.has(key))
       throw new ValidationError(
         `Keyword de schema no admitida en ${path}: ${key}`,
@@ -106,9 +108,14 @@ export function cleanSchemaForLLM(schema: unknown): JSONSchemaObject {
 export function deduplicateTools(tools: readonly LLMTool[]): LLMTool[] {
   const unique = new Map<string, LLMTool>();
   for (const tool of tools) {
+    // Solo name, description e inputSchema: el contrato LLM (toolSchema, .strict())
+    // rechaza metadatos del SDK de MCP como `execution`, `annotations` o `_meta`.
     if (!unique.has(tool.name))
       unique.set(tool.name, {
-        ...tool,
+        name: tool.name,
+        ...(tool.description !== undefined
+          ? { description: tool.description }
+          : {}),
         inputSchema: cleanSchemaForLLM(tool.inputSchema),
       });
   }

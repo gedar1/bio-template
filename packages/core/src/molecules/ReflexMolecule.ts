@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { createLogger } from "../config/logger.js";
-import { ENABLE_EMBEDDINGS } from "../config/embeddings.js";
+import { isEmbeddingsEnabled } from "../config/embeddings.js";
 import type { IMolecule } from "./interfaces/IMolecule.js";
 import {
   cosineSimilarity,
@@ -16,6 +16,7 @@ import {
 } from "../atoms/interpolation.js";
 import { measureSpan } from "../config/telemetry.js";
 import type { PerfMonitor } from "../infrastructure/PerfMonitor.js";
+import { resolveDataPath } from "../atoms/paths.js";
 
 const log = createLogger("ReflexMolecule");
 
@@ -138,21 +139,8 @@ export class ReflexMolecule implements IMolecule {
   private db!: Database.Database;
   private readonly dbPath: string;
 
-  /** Umbral de similitud para ejecución directa sin LLM */
-  static readonly REFLEX_THRESHOLD = 0.95;
-  /** Umbral de similitud para inyectar hint al LLM */
-  static readonly HINT_THRESHOLD = 0.8;
-  /** Mínimo de éxitos para activar modo reflex */
-  static readonly MIN_SUCCESS_COUNT = 3;
-
   /** Half-life in days for temporal decay */
   private static readonly DECAY_HALF_LIFE_DAYS = 30;
-
-  /** Base threshold for adaptive calculation */
-  private static readonly BASE_THRESHOLD = 0.9;
-
-  /** Max adjustment range for adaptive threshold */
-  private static readonly THRESHOLD_RANGE = 0.1;
 
   // ─── Vector index fields ──────────────────────────────────────────────────
 
@@ -166,7 +154,9 @@ export class ReflexMolecule implements IMolecule {
   private perf?: PerfMonitor;
 
   constructor(
-    dbPath: string = process.env.DATABASE_PATH || "./data/biocore.db",
+    dbPath: string = resolveDataPath(
+      process.env.DATABASE_PATH || "./data/biocore.db",
+    ),
     perf?: PerfMonitor,
   ) {
     this.dbPath = dbPath;
@@ -196,19 +186,19 @@ export class ReflexMolecule implements IMolecule {
     this.initTable();
 
     // Log embeddings decision
-    if (ENABLE_EMBEDDINGS) {
+    if (isEmbeddingsEnabled()) {
       log.info("Embeddings habilitados, usando HNSW search");
     } else {
       log.info("Embeddings deshabilitados, usando Jev-only routing");
     }
 
     // Attempt to load hnswlib-node (only if embeddings enabled)
-    if (ENABLE_EMBEDDINGS) {
+    if (isEmbeddingsEnabled()) {
       await loadHnswlib();
     }
 
     // Rebuild vector index from existing data (only if embeddings enabled)
-    if (ENABLE_EMBEDDINGS) {
+    if (isEmbeddingsEnabled()) {
       await measureSpan(
         "Molecule",
         "vector_index_rebuild",
@@ -435,28 +425,6 @@ export class ReflexMolecule implements IMolecule {
     return 0.8 + 0.4 * ratio;
   }
 
-  /**
-   * Adaptive threshold based on success/failure ratio.
-   * High success → lower threshold (easier to activate).
-   * High failure → higher threshold (harder to activate).
-   * Clamped to [HINT_THRESHOLD, 1.0].
-   */
-  static computeAdaptiveThreshold(
-    successCount: number,
-    failureCount: number,
-  ): number {
-    const total = successCount + failureCount;
-    if (total < ReflexMolecule.MIN_SUCCESS_COUNT)
-      return ReflexMolecule.BASE_THRESHOLD;
-
-    const successRatio = successCount / total;
-    const adjustment =
-      ReflexMolecule.THRESHOLD_RANGE * (successRatio - 0.5) * 2;
-    const threshold = ReflexMolecule.BASE_THRESHOLD - adjustment;
-
-    return Math.max(ReflexMolecule.HINT_THRESHOLD, Math.min(1.0, threshold));
-  }
-
   // ─── Core Methods ─────────────────────────────────────────────────────────
 
   /**
@@ -485,7 +453,7 @@ export class ReflexMolecule implements IMolecule {
 
     // Serialize embedding only if embeddings are enabled
     let serializedEmbedding = "";
-    if (ENABLE_EMBEDDINGS) {
+    if (isEmbeddingsEnabled()) {
       serializedEmbedding = serializeEmbedding(embedding);
     } else {
       // If embeddings disabled, store empty embedding (backward compatible)
@@ -522,7 +490,7 @@ export class ReflexMolecule implements IMolecule {
 
       // HNSW does not support updates; rebuild from SQLite when its embedding changes (only if embeddings enabled)
       if (
-        ENABLE_EMBEDDINGS &&
+        isEmbeddingsEnabled() &&
         existing.embedding !== serializedEmbedding &&
         this.vectorIndex
       ) {
@@ -553,7 +521,7 @@ export class ReflexMolecule implements IMolecule {
     const newId = result.lastInsertRowid as number;
 
     // Insert into vector index only if embeddings enabled
-    if (ENABLE_EMBEDDINGS) {
+    if (isEmbeddingsEnabled()) {
       this.insertIntoIndex(newId, embedding);
     }
 
@@ -615,7 +583,7 @@ export class ReflexMolecule implements IMolecule {
    */
   findSimilar(embedding: Embedding, topK: number = 5): ReflexMatch | null {
     // If embeddings are disabled, return null — use loadAllReflexes + Jev routing instead
-    if (!ENABLE_EMBEDDINGS) {
+    if (!isEmbeddingsEnabled()) {
       log.debug(
         "Embeddings deshabilitados, skipping findSimilar (use loadAllReflexes + Jev)",
       );
@@ -710,7 +678,7 @@ export class ReflexMolecule implements IMolecule {
       .slice(0, topK);
 
     const best = scored[0];
-    if (!best || best.similarity < ReflexMolecule.HINT_THRESHOLD) {
+    if (!best) {
       this.perf?.recordReflexQuery("miss");
       return null;
     }
@@ -733,15 +701,8 @@ export class ReflexMolecule implements IMolecule {
       compositeScore: best.compositeScore,
     };
 
-    // Determine mode using adaptive threshold
-    const adaptiveThreshold = ReflexMolecule.computeAdaptiveThreshold(
-      best.meta.success_count,
-      best.meta.failure_count,
-    );
-    const isReflex =
-      best.similarity >= adaptiveThreshold &&
-      best.meta.success_count >= ReflexMolecule.MIN_SUCCESS_COUNT;
-    const mode: ReflexMatch["mode"] = isReflex ? "reflex" : "hint";
+    // Sin umbral de modo: la búsqueda devuelve una pista. La decisión de ejecutar la toma el orquestador.
+    const mode: ReflexMatch["mode"] = "hint";
 
     // Record metrics
     this.perf?.recordReflexQuery(mode, best.similarity);
@@ -751,7 +712,6 @@ export class ReflexMolecule implements IMolecule {
         sequence: record.sequence,
         similarity: best.similarity.toFixed(3),
         compositeScore: best.compositeScore.toFixed(3),
-        adaptiveThreshold: adaptiveThreshold.toFixed(3),
         mode,
       },
       "Reflex encontrado",

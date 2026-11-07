@@ -22,6 +22,8 @@ import { SystemSection } from "../sections/SystemSection";
 import { SettingsPanel } from "../SettingsPanel";
 import { PlatformSection } from "../PlatformSection";
 import { computeBadges, type BadgeEvent } from "../../utils/computeBadges";
+import { IS_STUDIO_MODE, DEFAULT_TENANT_ID } from "../../utils/deploymentMode";
+import { BRAND_NAME } from "../../utils/brand";
 
 export const DashboardLayout: React.FC = () => {
   const { role } = useRole();
@@ -31,14 +33,14 @@ export const DashboardLayout: React.FC = () => {
     profile: tenantProfile,
     logout: tenantLogout,
   } = useTenantAuth();
-  const [tenantId, setTenantId] = useState("default");
+  const [tenantId, setTenantId] = useState(DEFAULT_TENANT_ID);
   const [activeSection, setActiveSection] =
     useState<SectionId>(getPersistedSection);
   const [badgeEvents, setBadgeEvents] = useState<BadgeEvent[]>([]);
   const prevCircuitBreakerRef = useRef<CircuitBreakerStatus[] | null>(null);
 
   const showChat =
-    role === "super_admin" || role === "admin" || role === "operator";
+    role === "platform_owner" || role === "tenant_owner" || role === "operator";
 
   const handleSectionChange = useCallback((section: SectionId) => {
     setActiveSection(section);
@@ -173,7 +175,9 @@ export const DashboardLayout: React.FC = () => {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Dna size={20} className="text-emerald-400" />
-            <h1 className="text-sm font-semibold text-gray-200">BioCore</h1>
+            <h1 className="text-sm font-semibold text-gray-200">
+              {BRAND_NAME}
+            </h1>
             <HealthSemaphore />
             <HealthInfo />
           </div>
@@ -194,7 +198,10 @@ export const DashboardLayout: React.FC = () => {
                 </button>
               </div>
             )}
-            <TenantSelector current={tenantId} onChange={setTenantId} />
+            {/* En modo single hay un solo negocio: no hay selector ni llamada a /api/tenants */}
+            {IS_STUDIO_MODE && (
+              <TenantSelector current={tenantId} onChange={setTenantId} />
+            )}
           </div>
         </div>
       </header>

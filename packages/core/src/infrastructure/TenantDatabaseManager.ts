@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "../config/logger.js";
+import { resolveDataPath } from "../atoms/paths.js";
 
 const log = createLogger("TenantDatabaseManager");
 
@@ -30,11 +31,14 @@ export class TenantDatabaseManager {
   private readonly tenantsDir: string;
   private readonly sharedDbPath: string;
 
-  constructor(baseDir: string = process.env.DATABASE_DIR || "./data") {
+  constructor(
+    baseDir: string = resolveDataPath(process.env.DATABASE_DIR || "./data"),
+  ) {
     this.baseDir = baseDir;
     this.tenantsDir = join(baseDir, "tenants");
-    this.sharedDbPath =
-      process.env.DATABASE_PATH || join(baseDir, "biocore-shared.db");
+    this.sharedDbPath = resolveDataPath(
+      process.env.DATABASE_PATH || join(baseDir, "biocore-shared.db"),
+    );
 
     this.ensureDirectories();
   }

@@ -14,11 +14,11 @@ import { useRole } from "../../context/RoleContext";
 import { RoleGuard } from "../RoleGuard";
 import { Tooltip } from "../Tooltip";
 import type {
-  ReflexPanelProps,
+  ReflexActivityBucket,
   ReflexApiResponse,
   ReflexEntry,
-  ReflexActivityBucket,
-} from "./ReflexPanel.types";
+  ReflexPanelProps,
+} from "../../types";
 
 /**
  * ReflexPanel — displays current Reflex_Mode, aggregate metrics,
@@ -116,7 +116,7 @@ export const ReflexPanel: React.FC<ReflexPanelProps> = ({ tenantId }) => {
       {selectedReflex && (
         <ReflexDetail
           reflex={selectedReflex}
-          canInvalidate={role === "admin" || role === "super_admin"}
+          canInvalidate={role === "tenant_owner" || role === "platform_owner"}
           invalidating={invalidating === selectedReflex.id}
           onInvalidate={() => handleInvalidate(selectedReflex.id)}
           onClose={() => setSelectedReflex(null)}
@@ -255,7 +255,6 @@ interface ReflexRowProps {
 
 function ReflexRow({ reflex, isSelected, onSelect }: Readonly<ReflexRowProps>) {
   const timeAgo = formatTimeAgo(reflex.lastUsed);
-  const thresholdPercent = (reflex.adaptiveThreshold * 100).toFixed(0);
 
   return (
     <button
@@ -282,9 +281,6 @@ function ReflexRow({ reflex, isSelected, onSelect }: Readonly<ReflexRowProps>) {
           )}
           <span className="text-gray-500 text-xs">
             {reflex.stepCount} pasos
-          </span>
-          <span className="text-gray-500 text-xs" title="Adaptive threshold">
-            θ {thresholdPercent}%
           </span>
         </div>
       </div>
@@ -341,12 +337,6 @@ function ReflexDetail({
             <span className="text-gray-500">Pasos:</span>{" "}
             <span className="text-gray-300">{reflex.stepCount}</span>
           </div>
-        </div>
-        <div>
-          <span className="text-gray-500">Threshold adaptivo:</span>{" "}
-          <span className="text-gray-300">
-            {(reflex.adaptiveThreshold * 100).toFixed(1)}%
-          </span>
         </div>
         <div>
           <span className="text-gray-500">Último uso:</span>{" "}

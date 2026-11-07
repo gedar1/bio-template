@@ -8,7 +8,7 @@ inclusion: manual
 
 **¿Cómo ejecuta el LLM la respuesta? Si decide "sensory", ¿cómo se ejecuta eso?**
 
-Respuesta: **El LLM no ejecuta nada. El LLM solo retorna un "tool call" con el nombre de la herramienta y los argumentos. El programa es quien ejecuta.**
+Respuesta: **El LLM no ejecuta nada directamente. Primero, el sistema intenta detectar cadenas multi-paso con Jev (PASO 0). Si Jev detecta una cadena, se ejecuta sin LLM. Si no, el LLM toma el control.**
 
 ---
 
@@ -16,11 +16,41 @@ Respuesta: **El LLM no ejecuta nada. El LLM solo retorna un "tool call" con el n
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ PASO 1: USUARIO ESCRIBE                                     │
+│ PASO 0: JEV DETECTA CADENA MULTI-PASO (NUEVO - Paso 7)     │
 └─────────────────────────────────────────────────────────────┘
 
 Usuario: "Scrapea https://example.com y guarda el título en la DB"
        ↓
+TenantManager.evaluateSemanticRoute()
+       ↓
+callSemanticRouter(tenant, userMessage)
+       ↓
+Si TYPESAFE_API_KEY configurada:
+  jetEvaluateAll(userMessage, tools.json)
+  ↓
+  Jev paralleliza 3 preguntas:
+  - reflexes_anatomic: "¿Cuál es el PRIMER paso?" → scrape_url
+  - next_step: "¿SIGUIENTE paso?" → database_insert
+  - is_multi_step: "¿Requiere múltiples pasos?" → 0.89 (89%)
+       ↓
+  Jev retorna:
+  {
+    "execution_chain": ["scrape_url", "database_insert"],
+    "confidence": 1.0,
+    "is_multi_step": true
+  }
+       ↓
+  ⭐ PASO 8: executeDetectedChain(tenantId, ["scrape_url", "database_insert"])
+  (PENDIENTE: Delegar a CellServer para ejecución real)
+       ↓
+  ⭐ PASO 9: Si ejecución exitosa → saveReflex(chain, tenantId)
+  (Guardar cadena en BD para reutilización futura)
+       ↓
+  Si Jev abstiene o error → continúa con PASO 1 (LLM)
+
+┌─────────────────────────────────────────────────────────────┐
+│ PASO 1: USUARIO ESCRIBE (O JEV DELEGÓ AL LLM)              │
+└─────────────────────────────────────────────────────────────┘
 ┌─────────────────────────────────────────────────────────────┐
 │ PASO 2: UNIFIEDCORTEX ENVÍA AL LLM                          │
 └─────────────────────────────────────────────────────────────┘
@@ -384,33 +414,38 @@ Gemini recibe el resultado y continúa...
 
 ---
 
-## 🔄 El Ciclo Completo
+## 🔄 El Ciclo Completo (Con Jev Pre-Routing)
 
 ```
-1. LLM DECIDE
-   ↓
-2. UNIFIEDCORTEX EJECUTA
-   ↓
-3. CELLSERVER MUTA
-   ↓
-4. NUEVAS HERRAMIENTAS DISPONIBLES
-   ↓
-5. LLM RECIBE NUEVAS HERRAMIENTAS
-   ↓
-6. LLM DECIDE USAR NUEVA HERRAMIENTA
-   ↓
-7. UNIFIEDCORTEX EJECUTA
-   ↓
-8. CELLSERVER EJECUTA LA HERRAMIENTA
-   ↓
-9. RESULTADO VUELVE AL LLM
-   ↓
-10. LLM CONTINÚA O TERMINA
+OPCIÓN A: Jev detecta cadena multi-paso (rápido, 0 tokens LLM)
+│
+├─ 0. Jev analiza entrada → detecta ["scrape_url", "database_insert"]
+├─ 0b. ExecutionChainRunner ejecuta cadena (deferred a CellServer)
+├─ 0c. saveReflex() guarda cadena para reutilización
+└─ FIN (sin LLM)
+
+OPCIÓN B: Jev abstiene → entra LLM (ruta tradicional)
+│
+├─ 1. LLM DECIDE
+├─ 2. UNIFIEDCORTEX EJECUTA
+├─ 3. CELLSERVER MUTA
+├─ 4. NUEVAS HERRAMIENTAS DISPONIBLES
+├─ 5. LLM RECIBE NUEVAS HERRAMIENTAS
+├─ 6. LLM DECIDE USAR NUEVA HERRAMIENTA
+├─ 7. UNIFIEDCORTEX EJECUTA
+├─ 8. CELLSERVER EJECUTA LA HERRAMIENTA
+├─ 9. RESULTADO VUELVE AL LLM
+├─ 10. LLM CONTINÚA O TERMINA
+└─ FIN
 ```
 
 ---
 
-## 💡 Punto Clave: El LLM No Ejecuta Nada
+## 💡 Punto Clave: El LLM Es Opcional
+
+**NUEVO (Paso 7):** Jev detecta automáticamente cadenas multi-paso ANTES de que el LLM actúe. Si Jev devuelve una cadena con alta confianza, se ejecuta directamente sin LLM (0 tokens).
+
+Si Jev abstiene o tiene baja confianza, entonces el LLM toma el control como antes.
 
 El LLM **solo retorna un JSON** con:
 
@@ -428,27 +463,31 @@ El programa es quien:
 3. Ejecuta la acción
 4. Retorna el resultado al LLM
 
-**El LLM es como un "cerebro" que toma decisiones. El programa es el "cuerpo" que las ejecuta.**
+**El LLM es como un "cerebro" que toma decisiones. El programa es el "cuerpo" que las ejecuta. Jev es el "instinto" que a veces evita al cerebro.**
 
 ---
 
 ## 📍 Dónde Ocurre Cada Paso
 
-| Paso | Archivo             | Línea | Función                         |
-| ---- | ------------------- | ----- | ------------------------------- |
-| 1    | UnifiedCortex.ts    | 160   | runGeminiLoop()                 |
-| 2    | UnifiedCortex.ts    | 165   | chat.sendMessage()              |
-| 3    | (API de Gemini)     | -     | LLM retorna tool call           |
-| 4    | UnifiedCortex.ts    | 168   | result.response.functionCalls() |
-| 5    | UnifiedCortex.ts    | 172   | executeAction()                 |
-| 6    | BaseOrchestrator.ts | 88    | executeAction()                 |
-| 7    | BaseOrchestrator.ts | 50    | routeStimulus()                 |
-| 8    | BaseOrganisms.ts    | 50    | stimulate()                     |
-| 9    | CellServer.ts       | 82    | setupBaseTools()                |
-| 10   | CellServer.ts       | 157   | initializeMolecules()           |
-| 11   | CellServer.ts       | 211   | registerToolsForType()          |
-| 12   | UnifiedCortex.ts    | 175   | getUnifiedTools()               |
-| 13   | UnifiedCortex.ts    | 180   | chat.sendMessage()              |
+| Paso | Archivo             | Línea | Función                         | Estado          |
+| ---- | ------------------- | ----- | ------------------------------- | --------------- |
+| 0    | TenantManager.ts    | 1343  | evaluateSemanticRoute()         | ✅ Implementado |
+| 0a   | reflexSelector.ts   | 48    | jevEvaluateAll()                | ✅ Implementado |
+| 0b   | TenantManager.ts    | 2050  | executeDetectedChain()          | ⏳ Pendiente    |
+| 0c   | TenantManager.ts    | 2050  | reflexMolecule.saveReflex()     | ⏳ Pendiente    |
+| 1    | UnifiedCortex.ts    | 160   | runGeminiLoop()                 | ✅ Implementado |
+| 2    | UnifiedCortex.ts    | 165   | chat.sendMessage()              | ✅ Implementado |
+| 3    | (API de Gemini)     | -     | LLM retorna tool call           | ✅ Implementado |
+| 4    | UnifiedCortex.ts    | 168   | result.response.functionCalls() | ✅ Implementado |
+| 5    | UnifiedCortex.ts    | 172   | executeAction()                 | ✅ Implementado |
+| 6    | BaseOrchestrator.ts | 88    | executeAction()                 | ✅ Implementado |
+| 7    | BaseOrchestrator.ts | 50    | routeStimulus()                 | ✅ Implementado |
+| 8    | BaseOrganisms.ts    | 50    | stimulate()                     | ✅ Implementado |
+| 9    | CellServer.ts       | 82    | setupBaseTools()                | ✅ Implementado |
+| 10   | CellServer.ts       | 157   | initializeMolecules()           | ✅ Implementado |
+| 11   | CellServer.ts       | 211   | registerToolsForType()          | ✅ Implementado |
+| 12   | UnifiedCortex.ts    | 175   | getUnifiedTools()               | ✅ Implementado |
+| 13   | UnifiedCortex.ts    | 180   | chat.sendMessage()              | ✅ Implementado |
 
 ---
 

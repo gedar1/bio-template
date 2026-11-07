@@ -59,7 +59,7 @@ export function useSettings(): UseSettingsReturn {
   }, []);
 
   useEffect(() => {
-    fetchSettings();
+    void fetchSettings();
   }, [fetchSettings]);
 
   const updateSettings = useCallback(

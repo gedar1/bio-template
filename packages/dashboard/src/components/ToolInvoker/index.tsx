@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ToolInputSchema, FormField } from "../../types/dashboard";
 import { schemaToFormFields } from "../../utils/schemaToFormFields";
 
-interface ToolInvokerProps {
+export interface ToolInvokerProps {
   readonly tenantId: string;
   readonly toolName: string;
   readonly schema?: ToolInputSchema;
@@ -145,7 +145,7 @@ export function ToolInvoker({
 
 // ─── Field Sub-Component ────────────────────────────────────────────────────
 
-interface InvokerFieldProps {
+export interface InvokerFieldProps {
   readonly field: FormField;
   readonly value: string;
   readonly onChange: (value: string) => void;

@@ -4,7 +4,7 @@ import { join, extname } from "node:path";
 import { createLogger } from "../config/logger.js";
 import { BioCoreError } from "../errors.js";
 import { HttpRateLimiter } from "./middleware/httpRateLimiter.js";
-import { checkAuth } from "./middleware/apiAuth.js";
+import { checkAuth, type TokenDecision } from "./middleware/apiAuth.js";
 
 export type SSEHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
@@ -63,6 +63,16 @@ export class HealthServer {
   /** Registra un proveedor de datos para el dashboard */
   registerData(endpoint: string, fn: (arg?: any) => Promise<any>): void {
     this.dataProviders.set(endpoint, fn);
+  }
+
+  /** Verificador de JWT (tenant o plataforma) usado por la compuerta de auth */
+  private tokenVerifier?: (authHeader: string, path: string) => TokenDecision;
+
+  /** Inyecta el verificador de JWT. Sin él, solo API_SECRET pasa la compuerta. */
+  setTokenVerifier(
+    verifier: (authHeader: string, path: string) => TokenDecision,
+  ): void {
+    this.tokenVerifier = verifier;
   }
 
   /** Registra el handler de streaming para chat */
@@ -141,7 +151,7 @@ export class HealthServer {
         }
 
         // Autenticación — si API_SECRET está configurado en .env
-        const authResult = checkAuth(req);
+        const authResult = checkAuth(req, this.tokenVerifier);
         if (authResult) {
           this.json(res, authResult.status, { error: authResult.error });
           return;

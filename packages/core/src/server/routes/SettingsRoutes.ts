@@ -11,7 +11,7 @@ const log = createLogger("SettingsRoutes");
  * GET  /api/settings → retorna configuración completa
  * POST /api/settings → aplica un patch parcial (hot-reload settings)
  *
- * Ambos endpoints requieren rol "admin".
+ * Ambos endpoints requieren rol "tenant_owner".
  */
 export function setupSettingsRoutes(
   health: HealthServer,
@@ -19,7 +19,7 @@ export function setupSettingsRoutes(
 ): void {
   health.registerData("settings", async (body?: Record<string, unknown>) => {
     // ─── Auth: requiere rol admin ─────────────────────────────────────────
-    const roleError = checkRole("admin");
+    const roleError = checkRole("tenant_owner");
     if (roleError) {
       return { ...roleError, statusCode: 403 };
     }

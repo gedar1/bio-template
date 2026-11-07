@@ -7,7 +7,7 @@ inclusion: manual
 ## Arquitectura
 
 - [[biocore-architecture]] — Visión general de capas y componentes
-- [[biocore-execution-flow]] — Cómo se ejecuta un estímulo paso a paso
+- [[biocore-execution-flow]] — Cómo se ejecuta un estímulo paso a paso (incluye PASO 7: Jev pre-routing)
 
 ## LLM y Herramientas
 
@@ -15,14 +15,19 @@ inclusion: manual
 - [[biocore-llm-decision-flow]] — Cómo el LLM decide qué estímulo usar
 - [[biocore-tools-comparison]] — Comparación: carga de herramientas SIN vs CON BioCore
 
+## Jev: Detección Multi-Paso Pre-LLM
+
+- [[biocore-jev-pre-routing]] — NUEVO: Flujo Jev (PASO 7), ejecución directa (PASO 8), persistencia (PASO 9)
+- **ExecutionChainRunner** — Atom para ejecutar cadenas detectadas por Jev
+
 ## Estímulos y Mutación
 
-- [[biocore-stimulus-sources]] — Fuentes de estímulo (LLM, API, CLI, webhook, etc.)
+- [[biocore-stimulus-sources]] — Fuentes de estímulo (LLM, API, CLI, webhook, Jev, etc.)
 - [[biocore-mutation-lifecycle]] — Ciclo de vida de una mutación celular
 
 ## Conceptos Clave
 
-- [[biocore-glossary]] — Glosario: Cortex, Organismo, Célula, Molécula, Átomo
+- [[biocore-glossary]] — Glosario: Cortex, Organismo, Célula, Molécula, Átomo, Jev, ExecutionChainRunner
 
 ## Decisiones
 

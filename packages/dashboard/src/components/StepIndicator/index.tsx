@@ -1,4 +1,5 @@
 import React from "react";
+
 import {
   Globe,
   Database,
@@ -43,7 +44,19 @@ import {
   Clock,
   type LucideIcon,
 } from "lucide-react";
-import type { StepIndicatorProps, StepIconDef } from "./StepIndicator.types";
+
+export interface StepIndicatorProps {
+  steps: string[];
+  mode: "reflex" | "hint" | "executing";
+  currentStep?: number;
+  /** Index of the step that failed (shows in red) */
+  failedStep?: number;
+}
+
+export interface StepIconDef {
+  icon: LucideIcon;
+  label: string;
+}
 
 const STEP_ICONS: Record<string, StepIconDef> = {
   // Mutations

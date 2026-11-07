@@ -49,8 +49,7 @@ function toGeminiSchema(schema: JSONSchemaObject): Record<string, unknown> {
     result.properties = properties;
   }
   if (schema.items) result.items = toGeminiSchema(schema.items);
-  if (schema.additionalProperties !== undefined)
-    result.additionalProperties = schema.additionalProperties;
+  // additionalProperties no pertenece al subconjunto de OpenAPI que acepta Gemini.
   return result;
 }
 

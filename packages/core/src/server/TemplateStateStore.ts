@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createLogger } from "../config/logger.js";
+import { resolveDataPath } from "../atoms/paths.js";
 
 const log = createLogger("TemplateStateStore");
 
@@ -23,8 +24,9 @@ export class TemplateStateStore {
   private readonly db: InstanceType<typeof Database>;
 
   constructor(dbPath?: string) {
-    const resolvedPath =
-      dbPath || process.env.DATABASE_PATH || "./data/biocore-shared.db";
+    const resolvedPath = resolveDataPath(
+      dbPath || process.env.DATABASE_PATH || "./data/biocore-shared.db",
+    );
 
     // Ensure directory exists
     const dir = dirname(resolvedPath);

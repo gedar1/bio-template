@@ -26,10 +26,32 @@ const JWT_EXPIRATION_SECONDS = 86400;
 
 // ─── Zod Schemas ────────────────────────────────────────────────────────────
 
-/** Login request schema */
+/** Roles de tenant, de menor a mayor privilegio */
+export const TenantRoleSchema = z.enum(["viewer", "operator", "tenant_owner"]);
+export type TenantRole = z.infer<typeof TenantRoleSchema>;
+
+const ROLE_RANK: Record<TenantRole, number> = {
+  viewer: 0,
+  operator: 1,
+  tenant_owner: 2,
+};
+
+/**
+ * Rol efectivo de un login. Nunca supera el rol máximo guardado con la clave:
+ * el cliente solo puede pedir igual o menos. Sin rol pedido, se usa el máximo.
+ */
+function resolveLoginRole(
+  requested: TenantRole | undefined,
+  maxRole: TenantRole,
+): TenantRole {
+  if (!requested) return maxRole;
+  return ROLE_RANK[requested] <= ROLE_RANK[maxRole] ? requested : maxRole;
+}
+
+/** Login request schema. El rol es opcional: si se omite, se usa el máximo de la clave. */
 export const TenantLoginSchema = z.object({
   api_key: z.string().min(1),
-  role: z.enum(["admin", "operator", "viewer"]).default("operator"),
+  role: TenantRoleSchema.optional(),
 });
 
 export type TenantLoginInput = z.infer<typeof TenantLoginSchema>;
@@ -37,7 +59,7 @@ export type TenantLoginInput = z.infer<typeof TenantLoginSchema>;
 /** JWT payload for tenant tokens */
 export interface TenantTokenPayload {
   tenant_id: string;
-  role: "admin" | "operator" | "viewer";
+  role: "tenant_owner" | "operator" | "viewer";
   profile: string;
   iat: number;
   exp: number;
@@ -104,10 +126,14 @@ export class TenantAuthService {
    *
    * @returns JWT token info on success, or error object on failure
    */
-  async login(
-    input: TenantLoginInput,
-  ): Promise<
-    | { token: string; tenant_id: string; profile: string; expires_in: number }
+  async login(input: TenantLoginInput): Promise<
+    | {
+        token: string;
+        tenant_id: string;
+        profile: string;
+        role: TenantRole;
+        expires_in: number;
+      }
     | { error: string; status: 401 | 403 }
   > {
     const platformSecret = process.env.PLATFORM_SECRET;
@@ -124,6 +150,7 @@ export class TenantAuthService {
       tenant_id: string;
       profile: string;
       status: string;
+      api_key_role: TenantRole;
     } | null = null;
 
     for (const tenant of tenantsWithKeys) {
@@ -154,7 +181,17 @@ export class TenantAuthService {
 
     // Issue JWT with tenant claims
     const signingSecret = this.deriveSigningSecret(matchedTenant.tenant_id);
-    const role = input.role ?? "operator";
+    const role = resolveLoginRole(input.role, matchedTenant.api_key_role);
+    if (input.role && input.role !== role) {
+      log.warn(
+        {
+          tenantId: matchedTenant.tenant_id,
+          requested: input.role,
+          granted: role,
+        },
+        "Rol solicitado por encima del máximo de la clave; se otorga el máximo",
+      );
+    }
 
     const payload = {
       tenant_id: matchedTenant.tenant_id,
@@ -176,6 +213,7 @@ export class TenantAuthService {
       token,
       tenant_id: matchedTenant.tenant_id,
       profile: matchedTenant.profile,
+      role,
       expires_in: JWT_EXPIRATION_SECONDS,
     };
   }
@@ -227,10 +265,13 @@ export class TenantAuthService {
    * Regenerate API key for a tenant.
    * Generates a new key, hashes it, updates the registry, and returns the new raw key.
    */
-  async regenerateApiKey(tenantId: string): Promise<{ raw: string }> {
+  async regenerateApiKey(
+    tenantId: string,
+    maxRole: TenantRole,
+  ): Promise<{ raw: string }> {
     const { raw, hash } = await this.generateApiKey();
 
-    this.registry.setApiKeyHash(tenantId, hash);
+    this.registry.setApiKeyHash(tenantId, hash, maxRole);
 
     log.info({ tenantId }, "API key regenerated");
 
