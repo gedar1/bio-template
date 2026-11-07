@@ -13,12 +13,7 @@ const log = createLogger("TenantRegistryService");
 export const TenantStatusSchema = z.enum(["active", "inactive", "degraded"]);
 export type TenantStatus = z.infer<typeof TenantStatusSchema>;
 
-export const TenantProfileSchema = z.enum([
-  "dev",
-  "restaurant",
-  "clinic",
-  "ecommerce",
-]);
+export const TenantProfileSchema = z.enum(["domain"]);
 export type TenantProfileType = z.infer<typeof TenantProfileSchema>;
 
 const TenantRecordSchema = z.object({

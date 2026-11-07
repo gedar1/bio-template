@@ -29,7 +29,6 @@ import type {
 export const ReflexPanel: React.FC<ReflexPanelProps> = ({ tenantId }) => {
   const { data, loading, error, refetch } = useApi<ReflexApiResponse>(
     `/api/reflex?tenantId=${tenantId}`,
-    5000,
   );
   const { role } = useRole();
 

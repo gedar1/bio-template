@@ -2,357 +2,61 @@
 inclusion: manual
 ---
 
-# 📤 Exactamente Qué Se Envía al LLM
-
-## La Pregunta
-
-**¿Se envía el registry.json completo al LLM? ¿O solo la información del schema?**
-
-Respuesta: **NO se envía el archivo registry.json. Se envía solo el schema estructurado de las herramientas.**
-
----
-
-## 🔍 Lo Que Realmente Se Envía
-
-### Paso 1: El Usuario Escribe
-
-```
-Usuario: "Scrapea https://example.com y guarda el título en la DB"
-```
-
-### Paso 2: UnifiedCortex Prepara la Llamada a la API
-
-```typescript
-// En UnifiedCortex.ts línea 100-110
-
-const response = await this.anthropic.messages.create({
-  model: "claude-3-5-sonnet-latest",
-  max_tokens: 1024,
-
-  // ⭐ ESTO SE ENVÍA AL LLM:
-  messages: [
-    {
-      role: "system",
-      content:
-        "Eres el Cortex de un sistema biológico BioCore. Puedes mutar tus órganos usando señales de diferenciación.",
-    },
-    {
-      role: "user",
-      content: "Scrapea https://example.com y guarda el título en la DB",
-    },
-  ],
-
-  // ⭐ Y ESTO TAMBIÉN SE ENVÍA AL LLM:
-  tools: [
-    {
-      name: "stimulate_differentiation",
-      description:
-        "Muta la célula a un perfil especializado con nuevas herramientas. Tipos disponibles: 'sensory': Para leer datos externos: web scraping, APIs REST, feeds RSS. | 'memory': Para persistir y consultar información: bases de datos, archivos JSON, caché. | ...",
-      inputSchema: {
-        type: "object",
-        properties: {
-          type: {
-            type: "string",
-            enum: [
-              "sensory",
-              "sensory_advanced",
-              "memory",
-              "filesystem",
-              "communication",
-              "versioncontrol",
-              "http",
-              "system",
-              "monitor",
-              "undifferentiated",
-            ],
-            description:
-              "'sensory': Para leer datos externos: web scraping, APIs REST, feeds RSS. | 'memory': Para persistir y consultar información: bases de datos, archivos JSON, caché. | ...",
-          },
-        },
-        required: ["type"],
-      },
-    },
-  ],
-});
-```
-
----
-
-## 📊 Visualización: Qué Va en Cada Parte
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ LLAMADA A LA API DE CLAUDE/GEMINI                               │
-└─────────────────────────────────────────────────────────────────┘
-
-{
-  "model": "claude-3-5-sonnet-latest",
-  "max_tokens": 1024,
-
-  ┌─────────────────────────────────────────────────────────────┐
-  │ PARTE 1: MESSAGES (Historial + Prompt)                      │
-  └─────────────────────────────────────────────────────────────┘
-  "messages": [
-    {
-      "role": "system",
-      "content": "Eres el Cortex de un sistema biológico BioCore. Puedes mutar tus órganos usando señales de diferenciación."
-      ↑
-      Esto viene de BaseOrchestrator.constructor()
-      NO viene del registry.json
-    },
-    {
-      "role": "user",
-      "content": "Scrapea https://example.com y guarda el título en la DB"
-      ↑
-      Esto es lo que escribió el usuario
-    }
-  ],
-
-  ┌─────────────────────────────────────────────────────────────┐
-  │ PARTE 2: TOOLS (Schema de Herramientas)                     │
-  └─────────────────────────────────────────────────────────────┘
-  "tools": [
-    {
-      "name": "stimulate_differentiation",
-      "description": "Muta la célula a un perfil especializado con nuevas herramientas. Tipos disponibles: 'sensory': Para leer datos externos: web scraping, APIs REST, feeds RSS. | 'memory': Para persistir y consultar información: bases de datos, archivos JSON, caché. | 'filesystem': Operaciones de archivos: leer, escribir, copiar, mover, listar directorios. | 'communication': Envío de emails, WhatsApp y comunicación externa. | 'versioncontrol': Operaciones Git: commit, push, pull, branches, log. | 'http': Peticiones HTTP avanzadas: GET, POST, PUT, DELETE, upload, download. | 'system': Capacidad Híbrida: Ejecuta herramientas de sistema mediante CLIs. | 'monitor': Monitoreo inteligente: combina scraping, HTTP y sistema para vigilar servicios. | 'undifferentiated': Estado inicial sin capacidades específicas.",
-      ↑
-      Esto viene de:
-      1. registry.json (los tipos y descripciones)
-      2. CellServer.setupBaseTools() (construye el schema)
-      3. formatToolsForGemini() (formatea para Gemini)
-
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "sensory",
-              "sensory_advanced",
-              "memory",
-              "filesystem",
-              "communication",
-              "versioncontrol",
-              "http",
-              "system",
-              "monitor",
-              "undifferentiated"
-            ],
-            ↑
-            Estos valores vienen de registry.json
-
-            "description": "'sensory': Para leer datos externos: web scraping, APIs REST, feeds RSS. | 'memory': Para persistir y consultar información: bases de datos, archivos JSON, caché. | ..."
-            ↑
-            Estas descripciones vienen de registry.json
-          }
-        },
-        "required": ["type"]
-      }
-    }
-  ]
-}
-```
-
----
-
-## 🔄 El Flujo Completo: De registry.json a la API
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 1: registry.json (Archivo en Disco)                    │
-└─────────────────────────────────────────────────────────────┘
-
-{
-  "cells": [
-    {
-      "type": "sensory",
-      "description": "Para leer datos externos: web scraping, APIs REST, feeds RSS.",
-      "tools": ["scrape_url", "scrape_metadata", ...]
-    },
-    {
-      "type": "memory",
-      "description": "Para persistir y consultar información: bases de datos, archivos JSON, caché.",
-      "tools": ["db_query", "db_insert", ...]
-    },
-    ...
-  ]
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 2: CellServer.setupBaseTools() (En Memoria)            │
-└─────────────────────────────────────────────────────────────┘
-
-Lee registry.json y extrae:
-  - validTypes = ["sensory", "memory", "filesystem", ...]
-  - typeDescriptions = "'sensory': Para leer datos externos... | 'memory': Para persistir... | ..."
-
-Construye el schema:
-{
-  name: "stimulate_differentiation",
-  description: "Muta la célula... Tipos: 'sensory': web scraping | 'memory': BD | ...",
-  inputSchema: {
-    properties: {
-      type: {
-        enum: ["sensory", "memory", ...],
-        description: "'sensory': web scraping | 'memory': BD | ..."
-      }
-    }
-  }
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 3: formatToolsForGemini() (Conversión de Formato)      │
-└─────────────────────────────────────────────────────────────┘
-
-Convierte el schema a formato JSON que Gemini entiende:
-{
-  "name": "stimulate_differentiation",
-  "description": "...",
-  "inputSchema": { ... }
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 4: genAI.getGenerativeModel({ tools: [...] })          │
-└─────────────────────────────────────────────────────────────┘
-
-Envía a la API de Google:
-POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent
-
-{
-  "model": "gemini-2.0-flash",
-  "tools": [
-    {
-      "name": "stimulate_differentiation",
-      "description": "...",
-      "inputSchema": { ... }
-    }
-  ],
-  "messages": [
-    { "role": "user", "content": "Scrapea https://example.com..." }
-  ]
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 5: Gemini Recibe y Analiza                             │
-└─────────────────────────────────────────────────────────────┘
-
-Gemini recibe:
-  - El mensaje del usuario
-  - El schema de herramientas (con enum + descriptions)
-  - NO recibe el archivo registry.json
-
-Gemini razona:
-  1. Usuario dice: "Scrapea"
-  2. Veo enum: ["sensory", "memory", ...]
-  3. Veo description: "'sensory': web scraping"
-  4. Decido: stimulate_differentiation({ type: "sensory" })
-```
-
----
-
-## 🎯 Respuesta Directa a Tu Pregunta
-
-**¿Se envía el registry.json completo?**
-
-- **NO**. El archivo registry.json nunca sale del servidor.
-
-**¿Se envía información del registry.json?**
-
-- **SÍ**, pero solo la información relevante, transformada en un schema estructurado.
-
-**¿Qué se envía exactamente?**
-
-- El **schema de la herramienta** con:
-  - `name`: "stimulate_differentiation"
-  - `description`: Texto que describe qué hace y qué tipos hay
-  - `inputSchema`: Objeto JSON con `enum` (valores válidos) y `description` (explicación de cada valor)
-
-**¿Le dice al LLM que mire el registry?**
-
-- **NO**. El LLM nunca sabe que existe un archivo llamado "registry.json".
-- El LLM solo ve el schema estructurado que le enviamos.
-
----
-
-## 💡 Analogía
-
-Es como si le dijeras a alguien:
-
-**Opción 1 (Lo que NO hace BioCore):**
-
-- "Aquí está el archivo registry.json. Léelo y entiende qué hacer."
-
-**Opción 2 (Lo que SÍ hace BioCore):**
-
-- "Tienes una herramienta llamada 'stimulate_differentiation'. Puede recibir estos valores: sensory (para web scraping), memory (para BD), filesystem (para archivos). ¿Cuál necesitas?"
-
-El LLM recibe la **Opción 2**: información clara, estructurada y lista para usar.
-
----
-
-## 🔍 Dónde Se Transforma registry.json en Schema
-
-```typescript
-// En CellServer.ts línea 30-40
-
-const registry = require(join(__dirname, "../config/registry.json")) as {
-  cells: CellTypeDefinition[];
-};
-
-// ⭐ Aquí se extrae la información del registry
-const validTypes = registry.cells.map((c) => c.type) as [string, ...string[]];
-const typeDescriptions = registry.cells
-  .map((c) => `'${c.type}': ${c.description}`)
-  .join(" | ");
-
-// ⭐ Aquí se construye el schema que se envía al LLM
-private setupBaseTools() {
-  this.server.registerTool(
-    "stimulate_differentiation",
-    {
-      description: `Muta la célula a un perfil especializado con nuevas herramientas. Tipos disponibles: ${typeDescriptions}`,
-      inputSchema: {
-        type: z.enum(validTypes).describe(typeDescriptions),
-      },
-    },
-    // ...
-  );
-}
-```
-
-**El flujo:**
-
-1. Lee registry.json
-2. Extrae `validTypes` y `typeDescriptions`
-3. Construye el schema con esa información
-4. Envía el schema al LLM (NO el archivo)
-
----
-
-## 📋 Resumen
-
-| Pregunta                                | Respuesta                           |
-| --------------------------------------- | ----------------------------------- |
-| ¿Se envía registry.json?                | NO                                  |
-| ¿Se envía información de registry.json? | SÍ, transformada en schema          |
-| ¿Qué ve el LLM?                         | El schema con enum + descriptions   |
-| ¿Sabe el LLM que existe registry.json?  | NO                                  |
-| ¿Cómo sabe el LLM qué valores usar?     | Del enum y description en el schema |
-| ¿Dónde se transforma?                   | En CellServer.setupBaseTools()      |
-
-**En una línea:**
-
-```
-registry.json → CellServer extrae info → construye schema → envía schema al LLM
-```
-
-El LLM nunca ve el archivo, solo el schema estructurado.
-
----
+# Qué recibe el LLM en cada petición
+
+## Respuesta corta
+
+Cada llamada a un proveedor lleva dos partes: el historial estructurado de la sesión y la lista de herramientas. `registry.json` nunca se envía. La lista de herramientas sale de `listTools` de la célula: nombres, descripciones y esquemas que la célula registró para su tipo activo.
+
+## Construcción de la petición
+
+`UnifiedCortex.buildRequest()` arma el objeto que recibe cada proveedor:
+
+- `messages`: `getStructuredHistory()` de la sesión.
+- `tools`: `normalizeTools(toolSnapshot)`. `toolSnapshot` se actualiza con `refreshTools()`.
+
+Cada proveedor convierte la lista a su formato:
+
+| Proveedor                    | Función de formato        | Modelo por defecto                       |
+| ---------------------------- | ------------------------- | ---------------------------------------- |
+| Claude (`AnthropicProvider`) | `formatToolsForAnthropic` | `claude-3-5-sonnet-latest`               |
+| Gemini (`GeminiProvider`)    | `formatToolsForGemini`    | `gemini-2.5-flash`                       |
+| NVIDIA (`NvidiaProvider`)    | `formatToolsForOpenAI`    | `nvidia/llama-3.3-nemotron-super-49b-v1` |
+
+Los modelos por defecto están en `system/providers/providerFactory.ts`. La configuración puede reemplazarlos. El orden de los proveedores sale de `providerConfig.primaryProvider` y `fallbackOrder`.
+
+## Contenido del historial
+
+- **Agente de dominio.** Al crear el cortex de un tenant, `TenantManager` lee el archivo `agentFile` del perfil (por defecto `config/domain-agent.md`) y lo agrega como mensaje de sistema.
+- **Pistas de Jev.** Mensajes `[Jev] Secuencia sugerida: ...` cuando Jev devuelve un `hint`.
+- **Mensajes del usuario y del asistente**, y resultados de herramientas (`role: tool`).
+
+## Contenido de las herramientas
+
+Cada herramienta llega con `name`, `description` e `inputSchema`.
+
+- `stimulate_differentiation`: la descripción lista los tipos disponibles, y el enum solo contiene esos tipos. Ver [[biocore-llm-decision-flow]].
+- Herramientas del tipo activo: nombre, descripción y esquema que la función `register*Tools` del `CellServer` asignó a cada una.
+
+## Limpieza antes de enviar
+
+- `deduplicateTools` (`atoms/schema.ts`) devuelve solo `name`, `description` e `inputSchema`, y elimina duplicados por nombre.
+- `cleanSchemaForLLM` usa `cloneJsonSchema`, que omite `$schema`. Sin esa limpieza, algunos proveedores rechazan la herramienta.
+- `formatToolsForGemini` no envía `additionalProperties`. Gemini responde 400 con "Unknown name" si el campo aparece.
+
+## Problema abierto
+
+`db_query` declara `params: z.array(z.any())`. Zod genera un array sin `items`, y Gemini rechaza el esquema con "array requiere items". La corrección propuesta es que `cleanSchemaForLLM` asigne `items: {}` a los arrays que no tienen `items`. Esa corrección no está aplicada. El error bloquea la tarea programada `report-email`.
+
+## Lo que no recibe
+
+- `registry.json`, `domain-registry.json` ni `tools.json`.
+- Herramientas de células que no son el tipo activo.
+- Estado interno de las moléculas, conexiones ni recursos.
 
 ## Relaciones
 
-- Cómo el LLM decide con esa información: [[biocore-llm-decision-flow]]
-- Cómo se ejecuta la decisión: [[biocore-execution-flow]]
-- Comparación de herramientas SIN vs CON BioCore: [[biocore-tools-comparison]]
-- Glosario (Registry, Schema, Átomo): [[biocore-glossary]]
+- Cómo decide el LLM con esta información: [[biocore-llm-decision-flow]]
+- Ejecución completa: [[biocore-execution-flow]]
+- Comparación con cargar todas las herramientas: [[biocore-tools-comparison]]
+- Glosario: [[biocore-glossary]]

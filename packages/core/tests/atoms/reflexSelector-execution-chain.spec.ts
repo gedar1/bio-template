@@ -83,7 +83,6 @@ describe("reflexSelector - Execution Chain", () => {
           failureCount: 0,
           createdAt: Date.now(),
           lastUsedAt: Date.now(),
-          argTemplates: [],
         },
       ];
 
@@ -134,7 +133,6 @@ describe("reflexSelector - Execution Chain", () => {
           failureCount: 0,
           createdAt: Date.now(),
           lastUsedAt: Date.now(),
-          argTemplates: [],
         },
       ];
 
@@ -176,7 +174,6 @@ describe("reflexSelector - Execution Chain", () => {
           failureCount: 1,
           createdAt: Date.now(),
           lastUsedAt: Date.now(),
-          argTemplates: [],
         },
       ];
 
@@ -211,7 +208,6 @@ describe("reflexSelector - Execution Chain", () => {
           failureCount: 1,
           createdAt: Date.now(),
           lastUsedAt: Date.now(),
-          argTemplates: [],
         },
       ];
 
@@ -245,7 +241,6 @@ describe("reflexSelector - Execution Chain", () => {
           failureCount: 0,
           createdAt: Date.now(),
           lastUsedAt: Date.now(),
-          argTemplates: [],
         },
       ];
 
@@ -289,7 +284,6 @@ describe("reflexSelector - Execution Chain", () => {
           failureCount: 0,
           createdAt: Date.now(),
           lastUsedAt: Date.now(),
-          argTemplates: [],
         },
       ];
 

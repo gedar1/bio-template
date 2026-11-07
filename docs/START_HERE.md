@@ -66,7 +66,7 @@ DATABASE_DIR=./data
 
 `application-cell.js` importa `createApplicationComposition()` y registra los handlers MCP del dominio. El fallback `cells/CellServer.js` solo conoce las moléculas genéricas y no puede registrar esos handlers. Las BDs de negocio deben quedar aisladas en `DATABASE_DIR/tenants/{tenantId}.db`; no copies `data/`, `*.db` ni `.env` al template.
 
-Si `hnswlib-node` no tiene binding nativo compatible, ReflexMolecule usa búsqueda lineal. Si Transformers no puede cargar embeddings, la memoria semántica se desactiva de forma segura y el sistema sigue funcionando con rutas explícitas o LLM.
+La selección de cadenas no usa vectores: Jev elige sobre `tools.json` filtrado por las células permitidas. `ReflexMolecule` solo guarda el historial de cadenas.
 
 Usa Vitest y recursos temporales para moléculas. Comprueba `name`/`version`, ejecuta `initialize()` y libera siempre con `dispose()`. No uses APIs externas ni credenciales reales en tests.
 

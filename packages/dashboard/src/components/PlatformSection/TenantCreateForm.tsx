@@ -2,7 +2,7 @@ import { useState, useCallback } from "react";
 import { platformFetch } from "./usePlatformApi";
 
 /** Valid tenant profiles matching the backend TenantProfileSchema */
-const PROFILES = ["dev", "restaurant", "clinic", "ecommerce"] as const;
+const PROFILES = ["domain"] as const;
 type TenantProfile = (typeof PROFILES)[number];
 
 /** Regex for valid tenant_id: lowercase letters, numbers, and hyphens */
@@ -44,7 +44,7 @@ interface FormErrors {
 export function TenantCreateForm() {
   const [tenantId, setTenantId] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [profile, setProfile] = useState<TenantProfile>("dev");
+  const [profile, setProfile] = useState<TenantProfile>("domain");
   const [tokenLimit, setTokenLimit] = useState("");
   const [errors, setErrors] = useState<FormErrors>({});
   const [loading, setLoading] = useState(false);
@@ -77,7 +77,7 @@ export function TenantCreateForm() {
   const clearForm = useCallback(() => {
     setTenantId("");
     setDisplayName("");
-    setProfile("dev");
+    setProfile("domain");
     setTokenLimit("");
     setErrors({});
   }, []);

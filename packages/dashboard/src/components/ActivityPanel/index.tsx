@@ -5,7 +5,7 @@ import type { ActivityData } from "../../types";
 export function ActivityPanel() {
   const { data, loading } = useApi<ActivityData>(
     "/api/scheduler/activity",
-    5000,
+    10000,
   );
 
   const formatTime = (ts: number) => {

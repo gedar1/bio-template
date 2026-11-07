@@ -23,7 +23,6 @@ export interface HealthData {
 export const StatusBar: React.FC<StatusBarProps> = ({ tenantId }) => {
   const { data: toolsData } = useApi<ToolsData | Array<{ name: string }>>(
     `/api/tools?tenantId=${tenantId}`,
-    5000,
   );
   const { data: healthData } = useApi<HealthData>("/health", 10000);
 

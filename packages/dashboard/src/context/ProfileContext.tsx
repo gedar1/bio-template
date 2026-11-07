@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useMemo } from "react";
 import { useApi } from "../hooks/useApi";
 
-export type ProfileId = "dev" | "restaurant" | "clinic" | "ecommerce";
+export type ProfileId = "domain";
 
 export interface ProfileInfo {
   description: string;
@@ -17,7 +17,7 @@ interface ProfileContextValue {
 }
 
 const ProfileContext = createContext<ProfileContextValue>({
-  profile: "dev",
+  profile: "domain",
   profileInfo: null,
   availableProfiles: {},
   loading: true,
@@ -34,7 +34,7 @@ export const ProfileProvider: React.FC<ProfileProviderProps> = ({
   tenantId,
   children,
 }) => {
-  const [profile, setProfile] = useState<ProfileId>("dev");
+  const [profile, setProfile] = useState<ProfileId>("domain");
   const { data: profileData, loading } = useApi<{
     profile: ProfileId;
     profileInfo: ProfileInfo;

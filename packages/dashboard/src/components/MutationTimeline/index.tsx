@@ -27,7 +27,7 @@ export const MutationTimeline: React.FC<MutationTimelineProps> = ({
 }) => {
   const { data, loading, error } = useApi<{ mutations: MutationEvent[] }>(
     `/api/mutations?tenantId=${tenantId}`,
-    5000,
+    10000,
   );
 
   const [filter, setFilter] = useState<MutationFilterState>({

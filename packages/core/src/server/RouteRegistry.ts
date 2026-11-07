@@ -140,7 +140,6 @@ const ROUTE_REGISTRATIONS: RouteRegistration[] = [
           d.platformHealthCalculator,
           d.platformAlertService,
           d.tenantAuthService,
-          d.tenantManager,
         );
       } else {
         const dummyRegistry = new TenantRegistryServiceImpl();
@@ -149,7 +148,6 @@ const ROUTE_REGISTRATIONS: RouteRegistration[] = [
           s,
           dummyRegistry,
           dummyAuditLogger,
-          undefined,
           undefined,
           undefined,
           undefined,

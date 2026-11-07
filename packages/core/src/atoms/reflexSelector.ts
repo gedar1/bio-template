@@ -132,7 +132,6 @@ export async function jevEvaluateAll(
       successCount: 0,
       failureCount: 0,
       lastUsed: Date.now(),
-      argTemplates: null,
       schemaVersions: null,
     };
 

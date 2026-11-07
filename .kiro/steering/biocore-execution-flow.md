@@ -2,561 +2,181 @@
 inclusion: manual
 ---
 
-# 🚀 Cómo Se Ejecuta el Estímulo: De la Decisión del LLM a la Mutación
+# Cómo se ejecuta un mensaje: del chat a la mutación de la célula
 
-## La Pregunta
+Fuentes: `system/implementations/UnifiedCortex.ts`, `system/BaseOrchestrator.ts`, `organisms/BaseOrganisms.ts`, `cells/CellServer.ts`. Este documento describe el código vigente. Si algo no coincide, el código manda.
 
-**¿Cómo ejecuta el LLM la respuesta? Si decide "sensory", ¿cómo se ejecuta eso?**
+## Resumen
 
-Respuesta: **El LLM no ejecuta nada directamente. Primero, el sistema intenta detectar cadenas multi-paso con Jev (PASO 0). Si Jev detecta una cadena, se ejecuta sin LLM. Si no, el LLM toma el control.**
+Un mensaje entra por `UnifiedCortex.chat()` (ruta no streaming, usada por la API de chat, MCP, CLI y scheduler). Antes de llamar a un LLM, el cortex intenta resolver el mensaje con código y con Jev:
 
----
+1. Si hay un mensaje pendiente de URL, lo resuelve.
+2. Si Jev detecta la cadena `scrape_url→db_insert` con similitud ≥ 0.7, la ejecuta sin LLM.
+3. Si Jev sugiere otra secuencia, la agrega como pista en el historial.
+4. Si Jev elige una célula, la muta antes del LLM (pre-routing).
+5. Si nada de lo anterior resuelve el mensaje, el LLM decide. Sus tool calls se ejecutan con `executeAction`.
 
-## 📊 Flujo Completo: De Principio a Fin
+El LLM no ejecuta nada por sí mismo. Solo devuelve tool calls, y el código decide cómo ejecutarlas.
+
+## Paso a paso (ruta `chat()`)
+
+### 1. Entrada: `chat(userMessage)`
+
+- Marca la sesión activa y llama a `checkTokenLimit()`.
+- Llama a `runConversation(userMessage, streaming = false)`.
+- Si todo sale bien, registra la métrica `task_completed` y guarda la secuencia con `saveReflex()`.
+- Si falla, registra `task_error` y relanza el error.
+
+### 2. Mensaje pendiente
+
+`runConversation` revisa `pendingChains` para la sesión.
+
+- Si hay un pendiente de la cadena `scrape_url→db_insert`, se limpia.
+- Si el mensaje actual contiene una URL, se ejecuta `runScrapeAndStore(url)`.
+- Si no contiene URL, responde `PENDING_DISCARDED_WARNING`. Ese mensaje no se procesa: el usuario debe reenviarlo.
+
+### 3. Consulta a Jev (`queryReflex`)
+
+Solo si el mensaje no es una respuesta a un pendiente:
+
+1. `trackInput(cleanText)` registra el input y reinicia el guardarraíl de mutaciones (`_mutatedTypes`).
+2. `queryReflex(cleanText)` llama a `DefaultReflexExecutor.queryReflex(input, allowedCells)`. Ese método arma el catálogo de herramientas con `buildJevToolCatalog(allowedCells)` (filtrado de `tools.json` por las células permitidas) y llama a `jevEvaluateAll`.
+3. `jevEvaluateAll` hace dos llamadas a Jev, en secuencia:
+   - primer paso y si la tarea es multi-paso;
+   - siguiente paso, con el primero como dato. `ninguno` significa que la tarea termina en un paso.
+
+Jev devuelve `ReflexMatch` con `record.sequence`, `similarity` y `mode: "hint"`.
+
+### 4. Gate de cadenas (sin LLM)
+
+Si `match.record.sequence` es `scrape_url→db_insert` y `similarity ≥ CHAIN_MIN_SIMILARITY (0.7)`, se llama a `handleScrapeAndStore(cleanText)`:
+
+- Si el mensaje no trae URL (`extractUrl` no encuentra ninguna), guarda el pendiente y responde `URL_QUESTION` ("¿Cuál es la URL a scrapear?").
+- Si trae URL, ejecuta `runScrapeAndStore(url)`.
+
+`runScrapeAndStore` ejecuta los pasos en orden. Cada cambio de célula pasa por `routeStimulus`:
+
+| Paso | Llamada                                                                                      | Efecto                                                                                                   |
+| ---- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| 1    | `routeStimulus({type: "sensory", source: "jev-chain"})`                                      | Muta la célula a `sensory`.                                                                              |
+| 2    | `executeAction("scrape_url", {url})`                                                         | Scrapea la URL.                                                                                          |
+| 3    | `routeStimulus({type: "memory", source: "jev-chain"})`                                       | Muta la célula a `memory`.                                                                               |
+| 4    | `organisms[0].callTool("db_query", {sql: CREATE_CHAIN_TABLE_SQL})`                           | Crea `jev_chain_results` si no existe. Va directo al organismo para no registrarse como paso del reflex. |
+| 5    | `executeAction("db_insert", {table: "jev_chain_results", data: {url, payload, created_at}})` | Guarda el resultado en la base del tenant.                                                               |
+
+Si algún paso falla, se registra el error y la respuesta indica qué falló.
+
+La respuesta se guarda en el historial con `replyAssistant`. No hay llamada al LLM.
+
+### 5. Pista de Jev (`hint`)
+
+Si Jev devuelve otra secuencia en modo `hint`, `runConversation` agrega un mensaje de sistema al historial:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 0: JEV DETECTA CADENA MULTI-PASO (NUEVO - Paso 7)     │
-└─────────────────────────────────────────────────────────────┘
-
-Usuario: "Scrapea https://example.com y guarda el título en la DB"
-       ↓
-TenantManager.evaluateSemanticRoute()
-       ↓
-callSemanticRouter(tenant, userMessage)
-       ↓
-Si TYPESAFE_API_KEY configurada:
-  jetEvaluateAll(userMessage, tools.json)
-  ↓
-  Jev paralleliza 3 preguntas:
-  - reflexes_anatomic: "¿Cuál es el PRIMER paso?" → scrape_url
-  - next_step: "¿SIGUIENTE paso?" → database_insert
-  - is_multi_step: "¿Requiere múltiples pasos?" → 0.89 (89%)
-       ↓
-  Jev retorna:
-  {
-    "execution_chain": ["scrape_url", "database_insert"],
-    "confidence": 1.0,
-    "is_multi_step": true
-  }
-       ↓
-  ⭐ PASO 8: executeDetectedChain(tenantId, ["scrape_url", "database_insert"])
-  (PENDIENTE: Delegar a CellServer para ejecución real)
-       ↓
-  ⭐ PASO 9: Si ejecución exitosa → saveReflex(chain, tenantId)
-  (Guardar cadena en BD para reutilización futura)
-       ↓
-  Si Jev abstiene o error → continúa con PASO 1 (LLM)
-
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 1: USUARIO ESCRIBE (O JEV DELEGÓ AL LLM)              │
-└─────────────────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 2: UNIFIEDCORTEX ENVÍA AL LLM                          │
-└─────────────────────────────────────────────────────────────┘
-
-UnifiedCortex.chat(userMessage)
-  ↓
-runGeminiLoop(text)
-  ↓
-createGeminiChat()
-  ↓
-genAI.getGenerativeModel({
-  model: "gemini-2.0-flash",
-  tools: [
-    {
-      name: "stimulate_differentiation",
-      description: "Muta la célula... Tipos: 'sensory': web scraping | 'memory': BD | ...",
-      inputSchema: { enum: ["sensory", "memory", ...] }
-    }
-  ]
-})
-  ↓
-chat.sendMessage("Scrapea https://example.com y guarda el título en la DB")
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 3: LLM ANALIZA Y DECIDE                                │
-└─────────────────────────────────────────────────────────────┘
-
-Gemini recibe:
-  - Mensaje: "Scrapea https://example.com y guarda el título en la DB"
-  - Herramientas: [stimulate_differentiation con schema]
-
-Gemini razona:
-  1. "Usuario dice 'scrapea' → necesito web scraping"
-  2. "Veo enum: ['sensory', 'memory', ...]"
-  3. "Veo description: 'sensory': web scraping"
-  4. "¡Perfecto! Voy a usar sensory"
-
-Gemini retorna:
-{
-  "functionCalls": [
-    {
-      "name": "stimulate_differentiation",
-      "args": {
-        "type": "sensory"
-      }
-    }
-  ]
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 4: UNIFIEDCORTEX RECIBE EL TOOL CALL                   │
-└─────────────────────────────────────────────────────────────┘
-
-En UnifiedCortex.runGeminiLoop() línea 160-170:
-
-let result = await chat.sendMessage(text);
-let calls = result.response.functionCalls();
-// calls = [{ name: "stimulate_differentiation", args: { type: "sensory" } }]
-
-while (calls && calls.length > 0) {
-  for (const call of calls) {
-    // ⭐ AQUÍ COMIENZA LA EJECUCIÓN
-    const out = await this.executeAction(call.name, call.args);
-    // call.name = "stimulate_differentiation"
-    // call.args = { type: "sensory" }
-  }
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 5: EXECUTEACTION DECIDE QUÉ HACER                      │
-└─────────────────────────────────────────────────────────────┘
-
-En BaseOrchestrator.executeAction() línea 88-95:
-
-public async executeAction(name: string, args: any): Promise<string> {
-  log.info({ tool: name }, "Ejecutando acción");
-
-  // ⭐ AQUÍ DETECTA QUE ES UNA MUTACIÓN
-  if (name === "stimulate_differentiation") {
-    await this.routeStimulus(args.type);
-    // args.type = "sensory"
-    return "Sistema mutado exitosamente. Nuevas herramientas disponibles.";
-  }
-
-  // Si fuera otra herramienta, la ejecutaría aquí
-  // ...
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 6: ROUTESTIMULUS DIFUNDE LA MUTACIÓN                   │
-└─────────────────────────────────────────────────────────────┘
-
-En BaseOrchestrator.routeStimulus() línea 50-65:
-
-public async routeStimulus(type: string): Promise<void> {
-  const validated = StimulusTypeSchema.parse(type);
-  // validated = "sensory"
-
-  await this.perf.measure("mutation", async () => {
-    log.info({ stimulus: validated }, "Difundiendo señal de diferenciación");
-
-    // ⭐ AQUÍ DIFUNDE A TODOS LOS ORGANISMOS
-    const stimulationTasks = this.organisms.map((org) => org.stimulate(validated));
-    await Promise.all(stimulationTasks);
-    // Cada organismo recibe: stimulate("sensory")
-
-    log.info({ stimulus: validated }, "Sistema reconfigurado");
-  });
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 7: ORGANISMO RECIBE EL ESTÍMULO                        │
-└─────────────────────────────────────────────────────────────┘
-
-En BaseOrganisms.stimulate() línea 50-60:
-
-public async stimulate(customType: string): Promise<void> {
-  if (!this.cell) throw new MutationError(...);
-
-  this.log.info({ stimulus: customType }, "Estímulo recibido, mutando");
-  // customType = "sensory"
-
-  // ⭐ AQUÍ ENVÍA EL ESTÍMULO AL CELLSERVER (proceso hijo)
-  await this.cell.callTool({
-    name: "stimulate_differentiation",
-    arguments: { type: customType }
-    // arguments: { type: "sensory" }
-  });
-
-  await new Promise(resolve => setTimeout(resolve, 500));
-  this.log.info({ stimulus: customType }, "Genoma MCP modificado");
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 8: CELLSERVER RECIBE EL ESTÍMULO (Proceso Hijo)        │
-└─────────────────────────────────────────────────────────────┘
-
-En CellServer.setupBaseTools() línea 82-128:
-
-private setupBaseTools() {
-  this.server.registerTool(
-    "stimulate_differentiation",
-    { ... },
-    async ({ type }) => {
-      // type = "sensory"
-
-      // ⭐ AQUÍ COMIENZA LA MUTACIÓN REAL
-      await this.disposeMolecules();
-      // Cierra moléculas del estado anterior
-
-      this.currentType = type;
-      // this.currentType = "sensory"
-
-      const resolvedToolNames = resolveTools(type, registry.cells);
-      // resolvedToolNames = ["scrape_url", "scrape_metadata", "extract_links", ...]
-
-      await this.initializeMolecules(type);
-      // Instancia: ScraperMolecule, HTTPMolecule
-
-      this.registerToolsForType(type);
-      // Registra las herramientas MCP
-
-      log.info({ type: this.currentType }, "Mutación exitosa");
-      return {
-        content: [{
-          type: "text",
-          text: `Célula diferenciada exitosamente como '${type}'.`
-        }]
-      };
-    }
-  );
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 9: CELLSERVER INSTANCIA LAS MOLÉCULAS                  │
-└─────────────────────────────────────────────────────────────┘
-
-En CellServer.initializeMolecules() línea 157-210:
-
-private async initializeMolecules(type: string): Promise<void> {
-  // type = "sensory"
-
-  if (type === "sensory") {
-    // ⭐ AQUÍ SE CREAN LAS MOLÉCULAS
-    this.scraper = new ScraperMolecule();
-    this.http = new HTTPMolecule();
-
-    this.log.info({ type }, "Moléculas instanciadas");
-  } else if (type === "memory") {
-    this.database = new SQLiteMolecule();
-  } else if (type === "communication") {
-    this.gmail = new GmailMolecule();
-    this.whatsapp = new WhatsAppMolecule();
-  }
-  // ... más tipos
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 10: CELLSERVER REGISTRA LAS HERRAMIENTAS MCP            │
-└─────────────────────────────────────────────────────────────┘
-
-En CellServer.registerToolsForType() línea 211-238:
-
-private registerToolsForType(type: string): void {
-  // type = "sensory"
-
-  if (type === "sensory") {
-    // ⭐ AQUÍ SE REGISTRAN LAS HERRAMIENTAS
-    this.registerScraperTools();
-    // Registra: scrape_url, extract_links, scrape_metadata, extract_images
-
-    this.registerHTTPTools();
-    // Registra: fetch_api
-  }
-}
-
-En CellServer.registerScraperTools() línea 453-503:
-
-private registerScraperTools(): void {
-  this.server.registerTool(
-    "scrape_url",
-    {
-      description: "Scrapea una URL y extrae datos según un schema",
-      inputSchema: { ... }
-    },
-    async ({ url, schema }) => {
-      // ⭐ AQUÍ SE EJECUTA LA HERRAMIENTA
-      const result = await this.scraper!.scrape(url, schema);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
-    }
-  );
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 11: UNIFIEDCORTEX OBTIENE NUEVAS HERRAMIENTAS          │
-└─────────────────────────────────────────────────────────────┘
-
-De vuelta en UnifiedCortex.runGeminiLoop() línea 170-180:
-
-if (mutated) {
-  log.info("Mutación detectada, refrescando herramientas");
-
-  // ⭐ AQUÍ OBTIENE LAS NUEVAS HERRAMIENTAS
-  const toolNames = (await this.getUnifiedTools()).map(t => t.name);
-  // toolNames = ["stimulate_differentiation", "scrape_url", "extract_links", "scrape_metadata", ...]
-
-  const continueMsg = `Sistema mutado. Herramientas: ${toolNames.join(", ")}. Continúa la tarea original.`;
-
-  // ⭐ AQUÍ ENVÍA AL LLM LAS NUEVAS HERRAMIENTAS
-  result = await chat.sendMessage(continueMsg);
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 12: LLM RECIBE NUEVAS HERRAMIENTAS Y CONTINÚA           │
-└─────────────────────────────────────────────────────────────┘
-
-Gemini recibe:
-  - Mensaje: "Sistema mutado. Herramientas: stimulate_differentiation, scrape_url, extract_links, scrape_metadata, fetch_api. Continúa la tarea original."
-  - Herramientas: [
-      stimulate_differentiation,
-      scrape_url,
-      extract_links,
-      scrape_metadata,
-      extract_images,
-      fetch_api
-    ]
-
-Gemini razona:
-  1. "Ahora tengo herramientas de scraping"
-  2. "Usuario quería scrapear https://example.com"
-  3. "Voy a usar scrape_url"
-
-Gemini retorna:
-{
-  "functionCalls": [
-    {
-      "name": "scrape_url",
-      "args": {
-        "url": "https://example.com",
-        "schema": { "title": "string", "description": "string" }
-      }
-    }
-  ]
-}
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 13: UNIFIEDCORTEX EJECUTA SCRAPE_URL                   │
-└─────────────────────────────────────────────────────────────┘
-
-De vuelta en UnifiedCortex.runGeminiLoop():
-
-for (const call of calls) {
-  const out = await this.executeAction(call.name, call.args);
-  // call.name = "scrape_url"
-  // call.args = { url: "https://example.com", schema: {...} }
-}
-
-En BaseOrchestrator.executeAction():
-
-// No es stimulate_differentiation, así que busca el organismo que la tiene
-for (const org of this.organisms) {
-  const tools = await org.inspectTools();
-  if (tools && tools.some((t: any) => t.name === "scrape_url")) {
-    // ⭐ ENCONTRÓ EL ORGANISMO QUE TIENE scrape_url
-    const result = await org.callTool("scrape_url", args);
-    return JSON.stringify(result);
-  }
-}
-
-En BaseOrganisms.callTool():
-
-public async callTool(name: string, args: Record<string, any>): Promise<any> {
-  // ⭐ ENVÍA A CELLSERVER
-  const result = await this.cell.callTool({ name, arguments: args });
-  return result;
-}
-
-En CellServer (proceso hijo):
-
-// CellServer ya tiene scrape_url registrada
-// Ejecuta la herramienta:
-async ({ url, schema }) => {
-  const result = await this.scraper!.scrape(url, schema);
-  // ⭐ AQUÍ SCRAPEA LA URL
-  return { content: [{ type: "text", text: JSON.stringify(result) }] };
-}
-
-ScraperMolecule.scrape():
-  1. Descarga HTML con HTTPMolecule
-  2. Parsea con Cheerio
-  3. Extrae datos según schema
-  4. Retorna: { title: "Example Domain", description: "..." }
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 14: RESULTADO VUELVE AL LLM                            │
-└─────────────────────────────────────────────────────────────┘
-
-UnifiedCortex recibe el resultado:
-{ title: "Example Domain", description: "..." }
-
-Envía al LLM:
-{
-  "functionResponse": {
-    "name": "scrape_url",
-    "response": { "content": "{ \"title\": \"Example Domain\", \"description\": \"...\" }" }
-  }
-}
-
-Gemini recibe el resultado y continúa...
+[Jev] Secuencia sugerida: <secuencia>. Úsala como guía si aplica.
 ```
 
----
+La pista guía al LLM. No obliga a ejecutar nada.
 
-## 🎯 Resumen: Los 3 Actores
+### 6. Pre-routing de célula (`preRoute`)
 
-| Actor             | Responsabilidad             | Ejemplo                                                               |
-| ----------------- | --------------------------- | --------------------------------------------------------------------- |
-| **LLM (Gemini)**  | Decide qué herramienta usar | "Voy a usar stimulate_differentiation con type='sensory'"             |
-| **UnifiedCortex** | Ejecuta la decisión del LLM | Llama a executeAction("stimulate_differentiation", {type: "sensory"}) |
-| **CellServer**    | Ejecuta la herramienta real | Instancia ScraperMolecule y registra scrape_url                       |
+`preRoute(input)` usa las últimas 4 entradas de historial de usuario y asistente y llama a `preCellRoute(input, recentHistory, allowedCells)`.
 
----
+- Si Jev no devuelve ruta, o la célula ya está en `_mutatedTypes`, no hace nada.
+- Si devuelve una célula, llama a `routeStimulus({type, source: "jev-pre-router"})` y agrega el tipo a `_mutatedTypes`.
 
-## 🔄 El Ciclo Completo (Con Jev Pre-Routing)
+Así la célula ya tiene sus herramientas cuando el LLM empieza.
 
-```
-OPCIÓN A: Jev detecta cadena multi-paso (rápido, 0 tokens LLM)
-│
-├─ 0. Jev analiza entrada → detecta ["scrape_url", "database_insert"]
-├─ 0b. ExecutionChainRunner ejecuta cadena (deferred a CellServer)
-├─ 0c. saveReflex() guarda cadena para reutilización
-└─ FIN (sin LLM)
+### 7. Bucle del LLM
 
-OPCIÓN B: Jev abstiene → entra LLM (ruta tradicional)
-│
-├─ 1. LLM DECIDE
-├─ 2. UNIFIEDCORTEX EJECUTA
-├─ 3. CELLSERVER MUTA
-├─ 4. NUEVAS HERRAMIENTAS DISPONIBLES
-├─ 5. LLM RECIBE NUEVAS HERRAMIENTAS
-├─ 6. LLM DECIDE USAR NUEVA HERRAMIENTA
-├─ 7. UNIFIEDCORTEX EJECUTA
-├─ 8. CELLSERVER EJECUTA LA HERRAMIENTA
-├─ 9. RESULTADO VUELVE AL LLM
-├─ 10. LLM CONTINÚA O TERMINA
-└─ FIN
-```
+1. Se agrega el mensaje del usuario al historial.
+2. `refreshTools()` obtiene las herramientas actuales de los organismos (`getUnifiedTools`).
+3. Se recorre `providerChain()` (Gemini, Claude, NVIDIA, según configuración). Cada proveedor tiene su circuit breaker.
+4. Por cada respuesta del proveedor:
+   - Sin tool calls: se guarda la respuesta y se devuelve el texto.
+   - Con tool calls: se guardan en el historial, se ejecutan con `executeToolCalls`, se refrescan las herramientas y se vuelve a llamar al mismo proveedor.
+5. El bucle tiene como máximo `MAX_ITERATIONS = 10` vueltas. Al llegar al límite lanza `ProviderError` con razón `iteration_limit`.
+6. Si un proveedor falla antes de ejecutar efectos y el error es reintentable, se prueba el siguiente. Si ya hubo efectos (`effectsStarted`), no se reintenta con otro proveedor y el error se propaga.
 
----
+### 8. Ejecución de tool calls (`executeAction`)
 
-## 💡 Punto Clave: El LLM Es Opcional
+`executeToolCalls` ejecuta cada tool call en orden. Si una falla, responde a las llamadas pendientes con error y relanza.
 
-**NUEVO (Paso 7):** Jev detecta automáticamente cadenas multi-paso ANTES de que el LLM actúe. Si Jev devuelve una cadena con alta confianza, se ejecuta directamente sin LLM (0 tokens).
+`executeAction(name, args)` tiene dos rutas:
 
-Si Jev abstiene o tiene baja confianza, entonces el LLM toma el control como antes.
+**`stimulate_differentiation` (mutación pedida por el LLM):**
 
-El LLM **solo retorna un JSON** con:
+- Si el tipo ya está en `_mutatedTypes`, no muta y responde que las herramientas ya están disponibles.
+- Si no, llama a `routeStimulus({type, source: "llm"})`, marca el tipo y registra el paso `mutate:<tipo>` en el reflex.
 
-```json
-{
-  "name": "stimulate_differentiation",
-  "args": { "type": "sensory" }
-}
-```
+**Cualquier otra herramienta:**
 
-El programa es quien:
+- Busca el organismo que la expone (`inspectTools`).
+- Si `checkExecutionSafety` (Jev guardrail, solo con `TYPESAFE_API_KEY`) bloquea la ejecución, lanza `GuardrailBlockedError`.
+- Ejecuta `org.callTool(name, args)` dentro de `perfTracker.measure`.
+- Registra el paso en el reflex con `recordStep`.
+- Si no encuentra la herramienta, lanza `ToolExecutionError` con el mensaje "Muta el sistema primero".
 
-1. Recibe ese JSON
-2. Valida que sea correcto
-3. Ejecuta la acción
-4. Retorna el resultado al LLM
+## Mutación de célula
 
-**El LLM es como un "cerebro" que toma decisiones. El programa es el "cuerpo" que las ejecuta. Jev es el "instinto" que a veces evita al cerebro.**
+`routeStimulus(stimulus)` valida el tipo con `StimulusTypeSchema`, mide con `perfTracker` y llama a `stimulate(type)` en cada organismo.
 
----
+`BaseOrganisms.stimulate(type)` llama la herramienta MCP `stimulate_differentiation` en el proceso hijo `CellServer`.
 
-## 📍 Dónde Ocurre Cada Paso
+En `CellServer`, el handler de `stimulate_differentiation`:
 
-| Paso | Archivo             | Línea | Función                         | Estado          |
-| ---- | ------------------- | ----- | ------------------------------- | --------------- |
-| 0    | TenantManager.ts    | 1343  | evaluateSemanticRoute()         | ✅ Implementado |
-| 0a   | reflexSelector.ts   | 48    | jevEvaluateAll()                | ✅ Implementado |
-| 0b   | TenantManager.ts    | 2050  | executeDetectedChain()          | ⏳ Pendiente    |
-| 0c   | TenantManager.ts    | 2050  | reflexMolecule.saveReflex()     | ⏳ Pendiente    |
-| 1    | UnifiedCortex.ts    | 160   | runGeminiLoop()                 | ✅ Implementado |
-| 2    | UnifiedCortex.ts    | 165   | chat.sendMessage()              | ✅ Implementado |
-| 3    | (API de Gemini)     | -     | LLM retorna tool call           | ✅ Implementado |
-| 4    | UnifiedCortex.ts    | 168   | result.response.functionCalls() | ✅ Implementado |
-| 5    | UnifiedCortex.ts    | 172   | executeAction()                 | ✅ Implementado |
-| 6    | BaseOrchestrator.ts | 88    | executeAction()                 | ✅ Implementado |
-| 7    | BaseOrchestrator.ts | 50    | routeStimulus()                 | ✅ Implementado |
-| 8    | BaseOrganisms.ts    | 50    | stimulate()                     | ✅ Implementado |
-| 9    | CellServer.ts       | 82    | setupBaseTools()                | ✅ Implementado |
-| 10   | CellServer.ts       | 157   | initializeMolecules()           | ✅ Implementado |
-| 11   | CellServer.ts       | 211   | registerToolsForType()          | ✅ Implementado |
-| 12   | UnifiedCortex.ts    | 175   | getUnifiedTools()               | ✅ Implementado |
-| 13   | UnifiedCortex.ts    | 180   | chat.sendMessage()              | ✅ Implementado |
+1. `disposeMolecules()`: retira las herramientas MCP y libera los recursos del tipo anterior.
+2. `activateTypes(type)`: recorre la cadena de `parent`, crea las moléculas de cada tipo con registro, las inicializa y registra sus herramientas MCP.
+3. Actualiza el tipo actual.
 
----
+Detalle completo en [[biocore-mutation-lifecycle]].
 
-## 🚀 Flujo Resumido en 1 Línea
+Después de la mutación, `getUnifiedTools()` devuelve el catálogo nuevo. La célula siempre expone un solo tipo a la vez, por eso las mutaciones dentro de un mismo mensaje son secuenciales.
 
-```
-LLM decide → UnifiedCortex ejecuta → CellServer muta → Nuevas herramientas → LLM continúa
-```
+## Cierre y memoria
 
-**El LLM es el "pensador", el programa es el "ejecutor".**
+- `saveReflex()` guarda la secuencia de la sesión en `reflexes` (`ReflexMolecule.save`). Esta tabla es historial: no decide ni se consulta para ejecutar nada.
+- `task_completed` y `task_error` se registran en `platform_metrics`. Requiere la fila del tenant en `platform_tenants` (`ensureTenantRecord`).
 
----
+## Ruta de streaming (`chatStream`)
 
-## 🧠 Flujo Alternativo: Memoria Refleja (Bypass del LLM)
+Esta ruta tiene un comportamiento distinto y debe tenerse en cuenta antes de depender del gate de cadenas:
 
-Cuando el usuario envía un mensaje similar a uno que ya se resolvió exitosamente, el sistema puede ejecutar la secuencia directamente sin invocar al LLM:
+1. `BaseOrchestrator.chatStream` llama a `trackInput` y `queryReflex`. Si Jev devuelve `hint`, agrega un mensaje `[Memoria Refleja]` y antepone `[Contexto: secuencia sugerida: ...]` al mensaje del usuario.
+2. `UnifiedCortex.chatStream` llama a `runConversation(userMessage, streaming = true, signal)`. Esa es la misma ruta que `chat()`: el pendiente de URL, el gate `scrape_url→db_insert`, la pista de Jev, el pre-routing y el bucle del LLM se evalúan igual en streaming y sin streaming.
+3. Al terminar, `chatStream` registra la métrica `task_completed` y guarda la secuencia con `saveReflex()`.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ FLUJO REFLEX (0 tokens)                                     │
-└─────────────────────────────────────────────────────────────┘
+Hoy el gate solo funciona en `chat()`. La ruta de streaming (`ProductionServer` → `TenantManager.chatStream`) no lo usa. Corregirlo es una decisión pendiente.
 
-1. Usuario: "Scrapea https://otro.com y guarda en tabla products"
-       ↓
-2. chatStream() → trackInput()
-       ↓
-3. queryReflex():
-   - normalizeForEmbedding("scrapea una URL y guarda en tabla")
-   - computeEmbedding() → vector 384 dims
-   - findSimilar() → HNSW index → candidatos
-   - compositeScore = similarity × temporalDecay × reliabilityBoost
-   - adaptiveThreshold(successCount, failureCount)
-   - mode = "reflex" (sim ≥ threshold, éxitos ≥ 3)
-       ↓
-4. executeReflex():
-   - checkSchemaVersions() → compatible ✓
-   - extractParamsFromText() → { url: "https://otro.com", table: "products" }
-   - interpolateTemplate(template, params):
-     - $URL → "https://otro.com"
-     - $TABLE → "products"
-   - Ejecuta secuencia:
-     a. routeStimulus("sensory")
-     b. executeAction("scrape_url", { url: "https://otro.com" })
-     c. routeStimulus("memory")
-     d. executeAction("db_insert", { table: "products", data: <output de b> })
-   - chainOutputTo: output de scrape_url → data de db_insert
-       ↓
-5. markSuccess() → refuerza el reflex
-       ↓
-6. yield resultado al usuario (0 tokens LLM consumidos)
-```
+## Tabla de pasos y ubicación
 
-### Degradación (Fallback al LLM)
+| Paso                | Función                                                              | Archivo                                                     |
+| ------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Entrada             | `chat()`, `chatStream()`                                             | `system/implementations/UnifiedCortex.ts`                   |
+| Pendiente y gate    | `runConversation()`, `handleScrapeAndStore()`                        | `UnifiedCortex.ts`                                          |
+| Ejecución de cadena | `runScrapeAndStore()`                                                | `UnifiedCortex.ts`                                          |
+| Consulta Jev        | `queryReflex()`, `trackInput()`                                      | `system/BaseOrchestrator.ts`                                |
+| Selección de cadena | `jevEvaluateAll()`                                                   | `atoms/reflexSelector.ts`                                   |
+| Catálogo para Jev   | `buildJevToolCatalog()`                                              | `config/toolCatalog.ts`                                     |
+| Pre-routing         | `preRoute()`, `preCellRoute()`                                       | `UnifiedCortex.ts`, `atoms/cellRouter.ts`                   |
+| Bucle LLM           | `runConversation()` (bucle de proveedores)                           | `UnifiedCortex.ts`                                          |
+| Tool calls          | `executeToolCalls()`                                                 | `UnifiedCortex.ts`                                          |
+| Acción              | `executeAction()`                                                    | `system/BaseOrchestrator.ts`                                |
+| Mutación            | `routeStimulus()`                                                    | `system/BaseOrchestrator.ts`                                |
+| Organismo           | `stimulate()`, `callTool()`, `inspectTools()`                        | `organisms/BaseOrganisms.ts`                                |
+| Célula              | `stimulate_differentiation`, `disposeMolecules()`, `activateTypes()` | `cells/CellServer.ts`                                       |
+| Historial           | `saveReflex()`, `ReflexMolecule.save()`                              | `system/BaseOrchestrator.ts`, `molecules/ReflexMolecule.ts` |
 
-Si el reflex no puede ejecutarse, degrada gracefully:
+## Pendientes conocidos
 
-| Causa                                   | Acción                                   |
-| --------------------------------------- | ---------------------------------------- |
-| Params faltantes (`$URL` no encontrada) | Degrada a HINT_Mode → LLM guiado         |
-| Schema version mismatch                 | Degrada a HINT_Mode → LLM guiado         |
-| Error en ejecución de paso              | Marca reflex como fallido → LLM completo |
-| Similitud < threshold                   | HINT_Mode o NORMAL según umbral          |
-
----
+- Gate de cadenas en streaming: ver la sección anterior.
+- El pendiente de URL se guarda en memoria del proceso (`pendingChains`), no en base de datos.
+- `CHAIN_TABLE` (`jev_chain_results`) es fija. Cada caso de negocio tendrá su propia tabla.
 
 ## Relaciones
 
-- Cómo el LLM decide qué estímulo usar: [[biocore-llm-decision-flow]]
-- Qué recibe el LLM exactamente: [[biocore-what-llm-receives]]
-- Fuentes posibles de estímulo: [[biocore-stimulus-sources]]
-- Ciclo de vida de la mutación: [[biocore-mutation-lifecycle]]
-- Glosario de componentes: [[biocore-glossary]]
+- Arquitectura por capas: [[biocore-architecture]]
+- Cadenas con Jev: [[biocore-jev-pre-routing]]
+- Decisiones: [[biocore-decisions]]
+- Glosario: [[biocore-glossary]]
+- Límites entre capas: [[biocore-boundaries]]

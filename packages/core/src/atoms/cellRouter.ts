@@ -228,9 +228,6 @@ const CELL_DESCRIPTIONS: Record<string, string> = {
   monitor:
     "Monitoreo de servicios: vigilar URLs, verificar disponibilidad, alertas",
   realtime: "Comunicación WebSocket bidireccional en tiempo real",
-  orders: "Pedidos de restaurante: crear, actualizar, listar, cancelar pedidos",
-  inventory: "Inventario: stock, alertas de reorden, productos disponibles",
-  delivery: "Entregas: asignar repartidor, rastrear entrega, estimar tiempo",
 };
 
 /**

@@ -43,21 +43,28 @@ function separator(title: string) {
   console.log(`${line}\n`);
 }
 
-function printResult(label: string, result: {
-  mode: string;
-  cellType: string;
-  outputs: string[];
-  jevConfidence?: number;
-  jevTokens: number;
-}) {
+function printResult(
+  label: string,
+  result: {
+    mode: string;
+    cellType: string;
+    outputs: string[];
+    jevConfidence?: number;
+    jevTokens: number;
+  },
+) {
   console.log(`✅  ${label}`);
   console.log(`    Modo:       ${result.mode.toUpperCase()}`);
   console.log(`    Célula:     ${result.cellType}`);
   console.log(`    Pasos:      ${result.outputs.length}`);
-  console.log(`    Jev tokens: ${result.jevTokens}${result.jevConfidence !== undefined ? ` (confidence: ${(result.jevConfidence * 100).toFixed(0)}%)` : ""}`);
+  console.log(
+    `    Jev tokens: ${result.jevTokens}${result.jevConfidence !== undefined ? ` (confidence: ${(result.jevConfidence * 100).toFixed(0)}%)` : ""}`,
+  );
   if (result.outputs.length > 0) {
     const preview = result.outputs[0]?.substring(0, 120) ?? "";
-    console.log(`    Output[0]:  ${preview}${preview.length >= 120 ? "…" : ""}`);
+    console.log(
+      `    Output[0]:  ${preview}${preview.length >= 120 ? "…" : ""}`,
+    );
   }
   console.log("");
 }
@@ -68,7 +75,9 @@ async function main() {
   console.log("\n🧬 BioCore — Demo HeadlessOrchestrator\n");
   console.log("Modos que se demostrarán:");
   console.log("  1. EXPLICIT  → pasos predefinidos (primer run)");
-  console.log("  2. REFLEX    → patrón aprendido en el run anterior (0 tokens)");
+  console.log(
+    "  2. REFLEX    → patrón aprendido en el run anterior (0 tokens)",
+  );
   console.log("  3. ESCALACIÓN → tarea que requiere LLM\n");
 
   // Configurar orquestador headless con células disponibles
@@ -90,11 +99,14 @@ async function main() {
   separator("Demo 1 — Modo EXPLICIT (pasos predefinidos)");
 
   console.log("📋 Tarea: listar archivos y guardar resultado en DB");
-  console.log("   Estrategia esperada: EXPLICIT (no hay reflex, fallback definido)\n");
+  console.log(
+    "   Estrategia esperada: EXPLICIT (no hay reflex, fallback definido)\n",
+  );
 
   try {
     const result1 = await headless.execute({
-      instruction: "lista los archivos del proyecto y guarda el resultado en la base de datos",
+      instruction:
+        "lista los archivos del proyecto y guarda el resultado en la base de datos",
       fallback: [
         {
           cell: "filesystem",
@@ -116,7 +128,9 @@ async function main() {
     });
 
     printResult("Tarea completada", result1);
-    console.log("💾  El patrón fue guardado en ReflexMolecule para la próxima vez.\n");
+    console.log(
+      "💾  El patrón fue guardado en ReflexMolecule para la próxima vez.\n",
+    );
   } catch (err) {
     if (err instanceof HeadlessEscalationError) {
       console.log(`⚠️  Escalación inesperada: ${err.message}\n`);
@@ -129,7 +143,9 @@ async function main() {
   separator("Demo 2 — Modo REFLEX (patrón aprendido)");
 
   console.log("📋 La MISMA tarea del Demo 1, segunda ejecución");
-  console.log("   Estrategia esperada: REFLEX (0 tokens, el patrón ya está guardado)\n");
+  console.log(
+    "   Estrategia esperada: REFLEX (0 tokens, el patrón ya está guardado)\n",
+  );
 
   // Crear un nuevo orchestrator con la MISMA sesión para que comparta los reflexes
   const headless2 = new HeadlessOrchestrator({
@@ -148,14 +164,10 @@ async function main() {
 
     printResult("Tarea completada", result2);
 
-    if (result2.mode === "reflex") {
-      console.log("⚡ Ejecutado en modo REFLEX: 0 tokens LLM consumidos.");
-    } else {
-      console.log(`ℹ️  Modo: ${result2.mode} (el reflex se guardó pero puede requerir más éxitos para activarse automáticamente)`);
-    }
+    console.log(`ℹ️  Modo: ${result2.mode}`);
   } catch (err) {
     if (err instanceof HeadlessEscalationError) {
-      console.log(`ℹ️  Sin reflex todavía (requiere ≥3 ejecuciones exitosas para activarse automáticamente): ${err.message}`);
+      console.log(`ℹ️  Sin reflex todavía : ${err.message}`);
       console.log("   Esto es normal en el primer run del sistema.\n");
     } else {
       throw err;
@@ -181,8 +193,12 @@ async function main() {
       console.log("✅  HeadlessEscalationError lanzado correctamente:");
       console.log(`    Código:      ${err.code}`);
       console.log(`    Instrucción: ${err.instruction}`);
-      console.log(`    Jev confidence: ${err.jevConfidence ?? "N/A (Jev no disponible)"}`);
-      console.log("\n   → El caller debería redirigir esta tarea al UnifiedCortex.");
+      console.log(
+        `    Jev confidence: ${err.jevConfidence ?? "N/A (Jev no disponible)"}`,
+      );
+      console.log(
+        "\n   → El caller debería redirigir esta tarea al UnifiedCortex.",
+      );
       console.log("   → Ejemplo:");
       console.log("       try { await headless.execute(task) }");
       console.log("       catch (e) {");
@@ -198,11 +214,21 @@ async function main() {
   separator("Resumen");
 
   console.log("Modo     | Tokens LLM | Tokens Jev | Cuándo se usa");
-  console.log("─────────|────────────|────────────|──────────────────────────────────────");
-  console.log("REFLEX   | 0          | 0          | Patrón aprendido con ≥3 éxitos");
-  console.log("JEV      | 0          | ~40        | Sin reflex, TYPESAFE_API_KEY configurada");
-  console.log("EXPLICIT | 0          | 0          | Tarea predefinida con .fallback[]");
-  console.log("ESCALAR  | LLM full   | 0          | Capturar HeadlessEscalationError → UnifiedCortex");
+  console.log(
+    "─────────|────────────|────────────|──────────────────────────────────────",
+  );
+  console.log(
+    "REFLEX   | 0          | 0          | Patrón aprendido con ≥3 éxitos",
+  );
+  console.log(
+    "JEV      | 0          | ~40        | Sin reflex, TYPESAFE_API_KEY configurada",
+  );
+  console.log(
+    "EXPLICIT | 0          | 0          | Tarea predefinida con .fallback[]",
+  );
+  console.log(
+    "ESCALAR  | LLM full   | 0          | Capturar HeadlessEscalationError → UnifiedCortex",
+  );
   console.log("");
 
   // Cleanup
