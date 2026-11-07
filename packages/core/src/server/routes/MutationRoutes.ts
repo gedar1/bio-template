@@ -4,6 +4,7 @@ import { checkRole } from "../middleware/roleMiddleware.js";
 import type { TenantManager } from "../TenantManager.js";
 import type { MutationEvent } from "../types/dashboard.js";
 import { createLogger } from "../../config/logger.js";
+import { resolveDataPath } from "../../atoms/paths.js";
 
 const log = createLogger("MutationRoutes");
 
@@ -14,7 +15,9 @@ const log = createLogger("MutationRoutes");
 export function setupMutationRoutes(
   health: HealthServer,
   tenantManager: TenantManager,
-  dbPath: string = process.env.DATABASE_PATH || "./data/biocore.db",
+  dbPath: string = resolveDataPath(
+    process.env.DATABASE_PATH || "./data/biocore.db",
+  ),
 ): void {
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
@@ -65,7 +68,7 @@ export function setupMutationRoutes(
   health.registerData(
     "mutations/trigger",
     async (body?: Record<string, unknown>) => {
-      const roleError = checkRole("admin");
+      const roleError = checkRole("tenant_owner");
       if (roleError) return roleError;
 
       const tenantId = (body?.tenantId as string) || "default";

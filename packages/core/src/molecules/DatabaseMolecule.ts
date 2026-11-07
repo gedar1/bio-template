@@ -1,6 +1,7 @@
 import { IDatabase } from "./interfaces/IDatabase.js";
 import { SQLiteMolecule } from "./implementations/SQLiteMolecule.js";
 import { MoleculeError } from "../errors.js";
+import { resolveDataPath } from "../atoms/paths.js";
 
 /**
  * Factory Pattern: Devuelve la implementación de DB según configuración.
@@ -17,13 +18,19 @@ import { MoleculeError } from "../errors.js";
  * await db.insert('logs', { message: 'Test', timestamp: Date.now() });
  */
 export class DatabaseMolecule {
-  static create(type?: string): IDatabase {
+  /**
+   * @param type - Tipo de base. Por defecto `DATABASE_TYPE` o sqlite.
+   * @param dbPath - Ruta del archivo (SQLite). Los tenants pasan su propia base
+   *   (`data/tenants/<tenant>.db`). Sin ruta se usa `DATABASE_PATH`, que es la base compartida.
+   */
+  static create(type?: string, dbPath?: string): IDatabase {
     const dbType = type || process.env.DATABASE_TYPE || "sqlite";
 
     switch (dbType.toLowerCase()) {
       case "sqlite":
         return new SQLiteMolecule(
-          process.env.DATABASE_PATH || "./data/biocore.db",
+          dbPath ??
+            resolveDataPath(process.env.DATABASE_PATH || "./data/biocore.db"),
         );
 
       case "postgres":

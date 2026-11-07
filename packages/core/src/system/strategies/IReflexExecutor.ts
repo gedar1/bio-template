@@ -49,10 +49,14 @@ export interface IReflexExecutor {
   recordStep(step: ReflexStep, args: Record<string, unknown>): void;
 
   /**
-   * Busca el reflex más similar al input sin ejecutarlo.
-   * @returns El match más cercano (mode reflex|hint) o null si no hay match.
+   * Pide a Jev la cadena sugerida para el input, con las herramientas de
+   * tools.json que pertenecen a las células permitidas.
+   * @returns La sugerencia como match (mode hint) o null si Jev no sugiere nada.
    */
-  queryReflex(input: string): Promise<ReflexMatch | null>;
+  queryReflex(
+    input: string,
+    allowedCells?: readonly string[],
+  ): Promise<ReflexMatch | null>;
 
   /**
    * Persiste la secuencia de la sesión actual como un reflex exitoso.

@@ -1,17 +1,6 @@
 import { ClipboardList } from "lucide-react";
 import { useApi } from "../../hooks/useApi";
-
-interface ActivityEntry {
-  taskId: string;
-  taskName: string;
-  timestamp: number;
-  status: "ok" | "error";
-  result: string;
-}
-
-interface ActivityData {
-  activity: ActivityEntry[];
-}
+import type { ActivityData } from "../../types";
 
 export function ActivityPanel() {
   const { data, loading } = useApi<ActivityData>(

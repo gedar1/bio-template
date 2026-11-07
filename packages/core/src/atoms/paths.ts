@@ -1,4 +1,4 @@
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -27,4 +27,14 @@ export function getModuleDir(importMetaUrl: string): string {
  */
 export function getProjectRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+}
+
+/**
+ * Resuelve una ruta de datos (DATABASE_PATH, DATABASE_DIR) desde la raíz del proyecto.
+ * Las rutas relativas no dependen del directorio desde el que se lanza el proceso.
+ *
+ * @example resolveDataPath("./data/biocore.db") // → <raíz>/data/biocore.db
+ */
+export function resolveDataPath(path: string): string {
+  return isAbsolute(path) ? path : resolve(getProjectRoot(), path);
 }

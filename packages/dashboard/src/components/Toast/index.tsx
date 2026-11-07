@@ -7,11 +7,11 @@ import {
 } from "react";
 import type {
   Toast,
-  ToastType,
   ToastContextValue,
-  ToastProviderProps,
   ToastItemProps,
-} from "./Toast.types";
+  ToastProviderProps,
+  ToastType,
+} from "../../types";
 
 const MAX_TOASTS = 3;
 const AUTO_DISMISS_MS = 4000;

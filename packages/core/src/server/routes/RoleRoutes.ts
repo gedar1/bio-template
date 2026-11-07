@@ -5,15 +5,15 @@ import type { UserRole, RoleConfig } from "../types/dashboard.js";
 
 /** Secciones permitidas por rol */
 const ROLE_SECTIONS: Record<UserRole, string[]> = {
-  super_admin: ["overview", "operations", "intelligence", "system", "platform"],
-  admin: ["overview", "operations", "intelligence", "system"],
+  platform_owner: ["overview", "operations", "intelligence", "system", "platform"],
+  tenant_owner: ["overview", "operations", "intelligence", "system"],
   operator: ["overview", "operations", "intelligence"],
   viewer: ["overview"],
 };
 
 /** Acciones permitidas por rol */
 const ROLE_ACTIONS: Record<UserRole, string[]> = {
-  super_admin: [
+  platform_owner: [
     "view",
     "invoke-tool",
     "force-mutation",
@@ -24,7 +24,7 @@ const ROLE_ACTIONS: Record<UserRole, string[]> = {
     "manage-tenants",
     "manage-platform",
   ],
-  admin: [
+  tenant_owner: [
     "view",
     "invoke-tool",
     "force-mutation",

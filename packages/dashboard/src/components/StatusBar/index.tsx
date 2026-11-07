@@ -1,14 +1,14 @@
 import { Dna, Wrench, Clock } from "lucide-react";
 import { useApi } from "../../hooks/useApi";
 import { Tooltip } from "../Tooltip";
-import type { StatusBarProps } from "./StatusBar.types";
+import type { StatusBarProps } from "../../types";
 
-interface ToolsData {
+export interface ToolsData {
   tools?: Array<{ name: string }>;
   cellType?: string;
 }
 
-interface HealthData {
+export interface HealthData {
   status: string;
   uptime: number;
 }

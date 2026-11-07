@@ -60,7 +60,7 @@ function getRoleFromStoredJwt(): UserRole | null {
 
     // Extract role from claims
     const role = claims.role;
-    if (role === "admin" || role === "operator" || role === "viewer") {
+    if (role === "tenant_owner" || role === "operator" || role === "viewer") {
       return role;
     }
 

@@ -44,10 +44,6 @@ export function setupReflexRoutes(
           failureCount: r.failureCount,
           lastUsed: r.lastUsed,
           stepCount: r.steps.length,
-          adaptiveThreshold: ReflexMolecule.computeAdaptiveThreshold(
-            r.successCount,
-            r.failureCount,
-          ),
         })),
       };
     } catch (err: unknown) {
@@ -60,7 +56,7 @@ export function setupReflexRoutes(
   health.registerData(
     "reflex/invalidate",
     async (body?: Record<string, unknown>) => {
-      const roleError = checkRole("admin");
+      const roleError = checkRole("tenant_owner");
       if (roleError) return roleError;
 
       const id = body?.id as number | undefined;

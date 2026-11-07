@@ -1,11 +1,11 @@
 /**
  * Valida la estructura portable mínima de bio-template.
  *
- * El validador inspecciona únicamente rutas de configuración y archivos fuente
- * conocidos. No recorre el checkout y nunca abre .env, *.db, data/ ni dist/.
+ * El validador inspecciona rutas de configuración y, para los nombres de
+ * herramienta, recorre solo packages/core/src. Nunca abre .env, *.db, data/ ni dist/.
  */
 
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -238,6 +238,66 @@ function checkDomainRegistry(
   });
 }
 
+/** Recorre packages/core/src y reúne los nombres pasados a registerTool("nombre", ...). */
+function collectRegisteredToolNames(
+  directory: string,
+  names: Set<string>,
+): void {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      collectRegisteredToolNames(entryPath, names);
+    } else if (entry.name.endsWith(".ts")) {
+      const contents = readFileSync(entryPath, "utf8");
+      for (const match of contents.matchAll(/registerTool\(\s*"([a-z_]+)"/g)) {
+        names.add(match[1]);
+      }
+    }
+  }
+}
+
+/**
+ * Verifica que los nombres de tools.json y de los registries existan en el código.
+ * El nombre real lo define el registerTool; los JSON solo lo describen.
+ */
+function checkToolNames(root: string, issues: TemplateContractIssue[]): void {
+  const registered = new Set<string>();
+  const sourceRoot = join(root, "packages/core/src");
+  if (existsSync(sourceRoot))
+    collectRegisteredToolNames(sourceRoot, registered);
+
+  const tools = readJson(root, "packages/core/src/config/tools.json", issues);
+  if (isRecord(tools)) {
+    for (const name of Object.keys(tools)) {
+      if (!registered.has(name)) {
+        issues.push({
+          path: "packages/core/src/config/tools.json",
+          message: `herramienta sin registerTool en el código: ${name}`,
+        });
+      }
+    }
+  }
+
+  for (const relativePath of [
+    "packages/core/src/config/registry.json",
+    "packages/core/src/config/domain-registry.json",
+  ]) {
+    const registry = readJson(root, relativePath, issues);
+    if (!isRecord(registry) || !Array.isArray(registry.cells)) continue;
+    for (const cell of registry.cells) {
+      if (!isRecord(cell) || !Array.isArray(cell.tools)) continue;
+      for (const tool of cell.tools) {
+        if (typeof tool === "string" && !registered.has(tool)) {
+          issues.push({
+            path: relativePath,
+            message: `herramienta de la célula ${String(cell.type)} sin registerTool en el código: ${tool}`,
+          });
+        }
+      }
+    }
+  }
+}
+
 function checkDomainConfiguration(
   root: string,
   issues: TemplateContractIssue[],
@@ -333,6 +393,7 @@ export function validateTemplateContract(
   checkRequiredFiles(root, issues, checkedPaths);
   checkPackageConfiguration(root, issues);
   checkDomainRegistry(root, issues);
+  checkToolNames(root, issues);
   checkDomainConfiguration(root, issues);
   checkGitignore(root, issues);
   checkHook(root, ".kiro/hooks/validate-template-contract.kiro.hook", issues);

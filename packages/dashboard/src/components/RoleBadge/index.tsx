@@ -1,8 +1,8 @@
 import { useRole } from "../../context/RoleContext";
 
-const ROLE_COLORS: Record<string, string> = {
-  super_admin: "bg-purple-600",
-  admin: "bg-red-600",
+export const ROLE_COLORS: Record<string, string> = {
+  platform_owner: "bg-purple-600",
+  tenant_owner: "bg-red-600",
   operator: "bg-yellow-600",
   viewer: "bg-gray-600",
 };

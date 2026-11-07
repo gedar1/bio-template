@@ -19,12 +19,12 @@ import { useApi } from "../../hooks/useApi";
 import { useProfile } from "../../context/ProfileContext";
 import { Tooltip } from "../Tooltip";
 import { StepIndicator } from "../StepIndicator";
-import type { TaskTemplate, TemplateParameter } from "../../types/dashboard";
 import { groupByCategory } from "../../utils/groupByCategory";
 import {
   validateTemplateParams,
   type ValidationError,
 } from "../../utils/validateTemplateParams";
+import type { TaskTemplate, TemplateParameter } from "../../types";
 
 const CATEGORY_TOOLTIPS: Record<string, string> = {
   memory: "Operaciones de base de datos: backups, queries, migraciones",
@@ -58,14 +58,13 @@ const CATEGORY_LABELS: Record<
   delivery: { icon: Truck, label: "Entregas" },
 };
 
-interface TemplateSelectorProps {
+export interface TemplateSelectorProps {
   readonly tenantId: string;
   readonly onSelect: (
     template: TaskTemplate,
     values: Record<string, string | number>,
   ) => void;
 }
-
 /**
  * Fetches templates from /api/templates, displays catalog grouped by category,
  * and renders a parameter form on selection with inline validation.
@@ -321,7 +320,7 @@ export function TemplateSelector({
 
 // ─── Parameter Field Sub-Component ──────────────────────────────────────────
 
-interface ParameterFieldProps {
+export interface ParameterFieldProps {
   readonly param: TemplateParameter;
   readonly value: string;
   readonly error?: string;

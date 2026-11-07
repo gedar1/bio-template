@@ -28,13 +28,28 @@ export function isAuthEnabled(): boolean {
   return API_SECRET.length > 0;
 }
 
+/** true si el header Authorization trae exactamente el API_SECRET del despliegue */
+export function isApiSecretRequest(authHeader: string | undefined): boolean {
+  if (!API_SECRET || !authHeader) return false;
+  const parts = authHeader.split(" ");
+  return (
+    parts.length === 2 &&
+    parts[0].toLowerCase() === "bearer" &&
+    timingSafeEqual(parts[1], API_SECRET)
+  );
+}
+
 /**
  * Verifica la autenticación de un request HTTP.
  *
  * @returns null si autenticado (o auth deshabilitada), o un objeto de error si no autorizado
  */
+/** Resultado del verificador de JWT: permitido, token con rol insuficiente o no reconocido */
+export type TokenDecision = "allow" | "forbidden" | "invalid";
+
 export function checkAuth(
   req: IncomingMessage,
+  verifyToken?: (authHeader: string, path: string) => TokenDecision,
 ): { error: string; status: number } | null {
   // Si no hay secret configurado, auth deshabilitada (modo desarrollo)
   if (!API_SECRET) {
@@ -61,6 +76,22 @@ export function checkAuth(
       if (timingSafeEqual(parts[1], API_SECRET)) {
         return null; // Autenticado
       }
+    }
+  }
+
+  // JWT de tenant o de plataforma: el verificador decide por ruta y rol
+  if (authHeader && verifyToken) {
+    const decision = verifyToken(authHeader, url);
+    if (decision === "allow") return null;
+    if (decision === "forbidden") {
+      log.warn(
+        { url, method: req.method },
+        "Rol insuficiente para el endpoint",
+      );
+      return {
+        error: "Forbidden: rol insuficiente para este endpoint",
+        status: 403,
+      };
     }
   }
 

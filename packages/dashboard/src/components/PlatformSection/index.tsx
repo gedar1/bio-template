@@ -26,7 +26,7 @@ const TABS: TabDefinition[] = [
 
 /**
  * PlatformSection — Main section wrapper for Platform Super Admin features.
- * Only renders for users with the `super_admin` role.
+ * Only renders for users with the `platform_owner` role.
  * Wraps content in PlatformAuthGate (handles JWT login).
  * Provides sub-navigation: Tenants, Metrics, Alerts, Create Tenant.
  *
@@ -36,13 +36,13 @@ export function PlatformSection() {
   const { role } = useRole();
   const [activeTab, setActiveTab] = useState<PlatformTab>("tenants");
 
-  // Role gate: only super_admin can access this section
-  if (!hasMinimumRole(role, "super_admin")) {
+  // Role gate: only platform_owner can access this section
+  if (!hasMinimumRole(role, "platform_owner")) {
     return (
       <div className="flex items-center justify-center min-h-[300px]">
         <div className="text-center">
           <p className="text-gray-400 text-sm">
-            Access denied. This section requires super_admin privileges.
+            Access denied. This section requires platform_owner privileges.
           </p>
         </div>
       </div>

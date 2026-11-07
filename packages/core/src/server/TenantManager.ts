@@ -16,7 +16,7 @@ import {
 } from "../config/profileRegistry.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getModuleDir } from "../atoms/paths.js";
+import { getModuleDir, resolveDataPath } from "../atoms/paths.js";
 import type { TenantRegistryService } from "./services/TenantRegistryService.js";
 import type { IUsageMetricsSink } from "../system/interfaces/IUsageMetricsSink.js";
 import type { CircuitState } from "../infrastructure/CircuitBreaker.js";
@@ -485,7 +485,7 @@ export class TenantManager {
    * Validates if the authenticated tenant has access to the target tenant's resources.
    *
    * Rules:
-   * - If authTenantId is "*" (super_admin), access is always granted.
+   * - If authTenantId is "*" (platform_owner), access is always granted.
    * - Otherwise, access is granted only if authTenantId matches targetTenantId.
    *
    * @param authTenantId - The tenant_id from the authenticated context
@@ -493,7 +493,7 @@ export class TenantManager {
    * @returns true if access is allowed, false otherwise
    */
   validateAccess(authTenantId: string, targetTenantId: string): boolean {
-    // super_admin (Platform JWT) has wildcard access
+    // platform_owner (Platform JWT) has wildcard access
     if (authTenantId === "*") return true;
 
     // Tenant can only access their own resources
@@ -577,7 +577,9 @@ export class TenantManager {
     reflexId: number,
   ): Promise<number[]> {
     try {
-      const dbPath = process.env.DATABASE_PATH || "./data/biocore.db";
+      const dbPath = resolveDataPath(
+        process.env.DATABASE_PATH || "./data/biocore.db",
+      );
       const Database = (await import("better-sqlite3")).default;
       const db = new Database(dbPath);
 
@@ -956,7 +958,9 @@ export class TenantManager {
       > = new Map();
 
       try {
-        const dbPath = process.env.DATABASE_PATH || "./data/biocore.db";
+        const dbPath = resolveDataPath(
+          process.env.DATABASE_PATH || "./data/biocore.db",
+        );
         const Database = (await import("better-sqlite3")).default;
         const db = new Database(dbPath);
 
@@ -1619,7 +1623,9 @@ export class TenantManager {
     tenantId: string,
   ): Promise<Array<{ id: number; task_summary: string }>> {
     try {
-      const dbPath = process.env.DATABASE_PATH || "./data/biocore.db";
+      const dbPath = resolveDataPath(
+        process.env.DATABASE_PATH || "./data/biocore.db",
+      );
       log.info({ dbPath }, "Opening DB for semantic route");
 
       const Database = (await import("better-sqlite3")).default;
@@ -1732,7 +1738,11 @@ export class TenantManager {
         const toolsData: Record<string, string> = JSON.parse(toolsContent);
 
         log.info(
-          { tenantId: tenant.id, totalTools: Object.keys(toolsData).length },
+          {
+            tenantId: tenant.id,
+            totalTools: Object.keys(toolsData).length,
+            toolsDataJson: toolsData,
+          },
           "Evaluating with tools.json via Jev",
         );
 

@@ -4,9 +4,9 @@ import { useApi } from "../../hooks/useApi";
 import { Tooltip } from "../Tooltip";
 import type { CircuitBreakerStatus } from "../../types/dashboard";
 import type {
-  CircuitBreakerPanelProps,
   CircuitBreakerApiResponse,
-} from "./CircuitBreakerPanel.types";
+  CircuitBreakerPanelProps,
+} from "../../types";
 
 /**
  * CircuitBreakerPanel — displays state (CLOSED/OPEN/HALF_OPEN) for each

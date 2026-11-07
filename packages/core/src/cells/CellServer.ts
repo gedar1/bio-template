@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { mkdirSync, existsSync } from "node:fs";
-import { getModuleDir } from "../atoms/paths.js";
+import { getModuleDir, resolveDataPath } from "../atoms/paths.js";
 
 // Importar todas las moléculas
 import { DatabaseMolecule } from "../molecules/DatabaseMolecule.js";
@@ -138,7 +138,7 @@ export class CellServer implements ICell {
       options.tenantId || process.env.BIOCORE_TENANT_ID || "default";
     this.applicationContext = options.context ?? {};
 
-    const dataDir = process.env.DATABASE_DIR || "./data";
+    const dataDir = resolveDataPath(process.env.DATABASE_DIR || "./data");
     const safeName = this.tenantId.replace(/[^a-zA-Z0-9_-]/g, "_");
     const tenantsDir = `${dataDir}/tenants`;
     if (!existsSync(tenantsDir)) {
@@ -382,7 +382,11 @@ export class CellServer implements ICell {
       {
         type: "memory",
         factory: async (context) => {
-          const database = DatabaseMolecule.create();
+          // La base de datos del tenant, no la compartida: los datos del negocio quedan aislados.
+          const database = DatabaseMolecule.create(
+            undefined,
+            context.tenantDbPath,
+          );
           this.database = database;
           const resource = { key: "database", molecule: database };
           context.trackResource(resource);

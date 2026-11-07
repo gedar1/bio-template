@@ -118,7 +118,7 @@ function SettingsPanelContent() {
  */
 export function SettingsPanel() {
   return (
-    <RoleGuard minRole="admin" fallback={<AccessDenied />}>
+    <RoleGuard minRole="tenant_owner" fallback={<AccessDenied />}>
       <SettingsPanelContent />
     </RoleGuard>
   );

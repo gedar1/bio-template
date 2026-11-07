@@ -15,6 +15,7 @@ import {
   type ReflexStep,
   type ReflexMatch,
 } from "../../molecules/ReflexMolecule.js";
+import { buildJevToolCatalog } from "../../config/toolCatalog.js";
 import type { IPerfTracker } from "./IPerfTracker.js";
 import type {
   IReflexExecutor,
@@ -72,36 +73,37 @@ export class DefaultReflexExecutor implements IReflexExecutor {
     this._currentStepArgs.push(args ?? {});
   }
 
-  async queryReflex(input: string): Promise<ReflexMatch | null> {
+  async queryReflex(
+    input: string,
+    allowedCells: readonly string[] = [],
+  ): Promise<ReflexMatch | null> {
     try {
-      // Single-phase Jev noul routing: load ALL reflexes, no embeddings pre-filtering
-      const candidates = this.reflex.loadAllReflexes();
-      if (candidates.length === 0) {
+      // Jev elige sobre tools.json filtrado por las células permitidas (no sobre reflexes guardados).
+      const catalog = buildJevToolCatalog(allowedCells);
+      if (Object.keys(catalog).length === 0) {
         return null;
       }
 
-      // Try Jev evaluation on all candidates
-      const { selectReflex } = await import("../../atoms/reflexSelector.js");
-      const selection = await selectReflex(input, candidates);
+      const { jevEvaluateAll } = await import("../../atoms/reflexSelector.js");
+      const selection = await jevEvaluateAll(input, catalog);
 
       if (!selection) {
-        this.log.debug("No reflex selected by Jev or structured fallback");
+        this.log.debug("Jev no sugirió cadena para el input");
         return null;
       }
 
-      // Map ReflexSelection back to ReflexMatch for backward compatibility
+      // La sugerencia de Jev no trae pasos reutilizables, así que nunca es modo "reflex".
       const match: ReflexMatch = {
         record: selection.record,
         similarity: selection.confidence,
         compositeScore: selection.confidence,
-        mode: selection.confidence >= 0.95 ? "reflex" : "hint",
+        mode: "hint",
       };
 
-      this.log.debug("Reflex selected via single-phase Jev routing", {
-        reflexId: selection.record.id,
-        source: selection.source,
+      this.log.debug("Cadena sugerida por Jev desde tools.json", {
+        sequence: selection.record.sequence,
         confidence: selection.confidence,
-        mode: match.mode,
+        toolCount: Object.keys(catalog).length,
       });
 
       return match;

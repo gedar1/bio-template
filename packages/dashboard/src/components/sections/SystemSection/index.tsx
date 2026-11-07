@@ -1,4 +1,3 @@
-import type { SystemSectionProps } from "./SystemSection.types";
 import { ErrorBoundary } from "../../ErrorBoundary";
 import { RoleGuard } from "../../RoleGuard";
 import { ReflexPanel } from "../../ReflexPanel";
@@ -7,6 +6,7 @@ import { LogsPanel } from "../../LogsPanel";
 import { MutationTimeline } from "../../MutationTimeline";
 import { RegistryViewer } from "../../RegistryViewer";
 import { WebSocketPanel } from "../../WebSocketPanel";
+import type { SystemSectionProps } from "../../../types";
 
 export const SystemSection: React.FC<SystemSectionProps> = ({ tenantId }) => {
   return (

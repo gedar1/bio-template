@@ -56,7 +56,7 @@ export function useApi<T>(endpoint: string, intervalMs?: number) {
   }, [endpoint]);
 
   useEffect(() => {
-    fetchData();
+    void fetchData();
     if (intervalMs) {
       const id = setInterval(fetchData, intervalMs);
       return () => clearInterval(id);

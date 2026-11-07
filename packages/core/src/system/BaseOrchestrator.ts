@@ -362,7 +362,8 @@ export abstract class BaseOrchestrator implements IOrchestrator {
    * @returns ReflexMatch con mode "reflex" | "hint" | null si no hay match
    */
   public async queryReflex(input: string): Promise<ReflexMatch | null> {
-    return this.reflexExecutor.queryReflex(input);
+    const allowedCells = this.organisms[0]?.getAllowedCells() ?? [];
+    return this.reflexExecutor.queryReflex(input, allowedCells);
   }
 
   /**
@@ -416,40 +417,7 @@ export abstract class BaseOrchestrator implements IOrchestrator {
         similarity: match.record.similarity?.toFixed(3),
       });
 
-      if (match.mode === "reflex") {
-        try {
-          const results = await this.executeReflex(match);
-          this.log.info("Tarea completada via reflex (0 tokens)", {
-            steps: results.length,
-          });
-          const formatted = formatReflexResults(results, match.record.steps);
-          this.addHistoryMessage(this.sessionId, {
-            role: "assistant",
-            content: formatted,
-            timestamp: Date.now(),
-          });
-          yield formatted;
-          return;
-        } catch (err: any) {
-          if (err.failedStepIndex !== undefined) {
-            const formatted = formatReflexError(
-              err.partialResults ?? [],
-              match.record.steps,
-              err.failedStepIndex,
-              err.failedStep,
-              err.message,
-            );
-            this.addHistoryMessage(this.sessionId, {
-              role: "assistant",
-              content: formatted,
-              timestamp: Date.now(),
-            });
-            yield formatted;
-            return;
-          }
-          this.log.info("Reflex fallo, usando LLM como fallback");
-        }
-      } else if (match.mode === "hint") {
+      if (match.mode === "hint") {
         this.addHistoryMessage(this.sessionId, {
           role: "system",
           content: `[Memoria Refleja] Secuencia exitosa anterior: ${match.record.sequence}. Usala como guia.`,

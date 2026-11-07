@@ -12,6 +12,7 @@ import type {
 } from "../../types/dashboard";
 import { useRole } from "../../context/RoleContext";
 import { useTenantAuth } from "../../context/TenantAuthContext";
+import { IS_STUDIO_MODE } from "../../utils/deploymentMode";
 import {
   filterPanelsByRole,
   filterPanelsForTenant,
@@ -23,7 +24,7 @@ const SECTION_TOOLTIPS: Record<SectionId, string> = {
   operations: "Scheduler, actividad y herramientas MCP",
   system: "Reflex, circuit breakers, logs, mutaciones y WebSocket",
   settings: "Configuración del sistema (admin only)",
-  platform: "Gestión de plataforma (super_admin only)",
+  platform: "Gestión de plataforma (platform_owner only)",
 };
 
 const SECTIONS: SectionDefinition[] = [
@@ -88,7 +89,7 @@ function persistSection(sectionId: SectionId): void {
   }
 }
 
-interface SectionNavProps {
+export interface SectionNavProps {
   activeSection: SectionId;
   onChange: (section: SectionId) => void;
   badges?: NotificationBadge[];
@@ -107,6 +108,10 @@ export function SectionNav({
   const visibleSections = SECTIONS.filter((section) => {
     // Belt + suspenders: explicitly exclude Platform for tenant-authenticated users
     if (isTenantAuth && section.id === "platform") {
+      return false;
+    }
+    // En modo single no existe gestión de clientes de plataforma
+    if (section.id === "platform" && !IS_STUDIO_MODE) {
       return false;
     }
 

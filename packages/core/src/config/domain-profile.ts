@@ -30,8 +30,9 @@ export const DOMAIN_PROFILE_ID = "domain"; // ← Cambia al nombre de tu caso de
 
 export const domainProfile: ProfileConfig = {
   allowedCells: [
-    "example",  // ← tu célula de dominio (definida en domain-registry.json)
-    "memory",   // ← SQLite genérico para queries ad-hoc (siempre útil)
+    "example", // ← tu célula de dominio (definida en domain-registry.json)
+    "memory", // ← SQLite genérico para queries ad-hoc (siempre útil)
+    "sensory", // ← scrape_url y lectura web (cadena scrape_url → database_insert)
     // "communication", // descomenta si envías emails o WhatsApp
     // "http",          // descomenta si consumes APIs externas
     // "filesystem",    // descomenta si lees/escribes archivos

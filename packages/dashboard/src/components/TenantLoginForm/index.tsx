@@ -2,7 +2,7 @@ import { useState, useCallback } from "react";
 import { KeyRound, LogIn, AlertCircle, Eye, EyeOff } from "lucide-react";
 import { useTenantAuth } from "../../context/TenantAuthContext";
 
-type TenantRole = "admin" | "operator" | "viewer";
+type TenantRole = "tenant_owner" | "operator" | "viewer";
 
 /**
  * Login form displayed when no valid tenant session exists.
@@ -101,7 +101,7 @@ export function TenantLoginForm() {
               className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-md text-gray-100 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-colors appearance-none"
               disabled={loading}
             >
-              <option value="admin">Admin</option>
+              <option value="tenant_owner">Tenant owner</option>
               <option value="operator">Operator</option>
               <option value="viewer">Viewer</option>
             </select>
