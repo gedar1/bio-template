@@ -5,8 +5,6 @@ fileMatchPattern: "**/packages/*/src/**"
 
 # Estándares de Código — BioCore (TypeScript/Node.js)
 
-Fuente completa: #[[file:docs/ai/copilot-instructions.md]]
-
 ## Reglas fundamentales
 
 - TypeScript estricto, nunca `any`

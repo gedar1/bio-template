@@ -36,11 +36,9 @@ export function ToolsPanel({ tenantId }: Readonly<{ tenantId: string }>) {
   const { role } = useRole();
   const { data, loading, refetch } = useApi<ToolsData | Tool[]>(
     `/api/tools?tenantId=${tenantId}`,
-    10000,
   );
   const { data: registryData } = useApi<{ cells: RegistryCellOption[] }>(
     "/api/registry",
-    60000,
   );
 
   const [selectedTool, setSelectedTool] = useState<Tool | null>(null);

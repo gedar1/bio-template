@@ -3,188 +3,159 @@ inclusion: fileMatch
 fileMatchPattern: "**/packages/core/src/**"
 ---
 
-# 📖 BioCore - Glosario
+# BioCore - Glosario
 
-Fuente completa: #[[file:docs/biocore/biocore-glossary.md]]
+Definiciones de los componentes tal como existen en `packages/core/src`. Para el flujo completo, ver [[biocore-execution-flow]].
 
 ## Jev (TypeSafe System One)
 
-Model Context Protocol (MCP) integration con TypeSafe/Jev para detectar cadenas multi-paso automáticamente.
+Modelo de TypeSafe que devuelve decisiones tipadas. BioCore lo usa para elegir cadenas de herramientas y tipos de célula sin llamar al LLM.
 
-- **Archivo:** `atoms/reflexSelector.ts` (jevEvaluateAll function)
-- **Función principal:** Analiza 3 preguntas en paralelo (Sistema One) para detectar secuencias de herramientas
-- **Preguntas:** primer paso y multi-paso (llamada 1, catálogo completo), siguiente paso (llamada 2, con el primero como dato)
-- **Salida:** `{ execution_chain: ["scrape_url", "database_insert"], confidence: 1.0, is_multi_step: true }`
-- **Consumo:** ~550-700 input tokens y ~150 output tokens por llamada (cifras de los logs). Dos llamadas por mensaje
-- **Beneficio:** 0 tokens LLM si confidence ≥ threshold
-- **Integración:** `UnifiedCortex.runConversation`, después de `queryReflex`. Flujo completo en [[biocore-jev-pre-routing]]
+- **Archivo:** `atoms/reflexSelector.ts` (`jevEvaluateAll`)
+- **Llamadas:** dos secuenciales por mensaje. La primera pregunta por el primer paso y si la tarea es multi-paso, con el catálogo completo. La segunda pregunta por el siguiente paso, con el primero como dato. `ninguno` significa que la tarea termina en un paso.
+- **Salida:** `ReflexSelection` con `record.sequence`, `confidence` y `source: "jev"`.
+- **Umbral:** `REFLEX_SELECTION_THRESHOLD = 0.7` es una guardia para que no se formen cadenas de baja confianza.
+- **Consumo:** los logs reportan entre 550 y 700 tokens de entrada y unos 150 de salida por llamada. No hay medición en otro entorno.
 - **Relacionado:** [[biocore-jev-pre-routing]], [[biocore-execution-flow]]
 
-## ExecutionChainRunner (Atom)
+## Gate de cadenas
 
-Ejecutor de cadenas multi-paso detectadas por Jev. Ejecuta herramientas secuencialmente, pasando outputs al siguiente paso.
+Paso de `UnifiedCortex.runConversation` que ejecuta `scrape_url→db_insert` sin LLM cuando Jev la detecta con similitud ≥ `CHAIN_MIN_SIMILARITY` (0.7, en `atoms/chainExtraction.ts`). Si falta la URL, guarda un pendiente con vencimiento de 24 horas (`DefaultPendingChainStore`). El siguiente mensaje de la misma sesión completa la cadena. El pendiente vive en memoria y se pierde al reiniciar el proceso.
 
-- **Archivo:** `atoms/executionChainRunner.ts`
-- **Clase:** `ExecutionChainRunner`
-- **Interfaz:** `ExecutionContext` (chainId, userMessage, tenantId, steps, intermediateOutputs)
-- **Métodos clave:** `executeChain()`, `buildStepInputs()`, `getChainResult()`
-- **Registry:** TOOL_REGISTRY con 56 tools mapeadas a moléculas
-- **Ejecución:** el gate `scrape_url→db_insert` no lo usa; ejecuta con `routeStimulus` y `executeAction`. La integración con `CellServer` sigue pendiente
-- **Persistencia:** PASO 9 - guarda reflex si ejecución exitosa
-- **Relacionado:** [[biocore-jev-pre-routing]], [[biocore-execution-flow]]
+- **Solo en `chat()`.** La ruta de streaming (`chatStream`) no ejecuta el gate.
+- **Relacionado:** [[biocore-execution-flow]]
+
+## Pre-router
+
+Paso de `UnifiedCortex.preRoute` que elige un tipo de célula con `preCellRoute` (`atoms/cellRouter.ts`) y lo muta antes del LLM. Se omite si ese tipo ya se mutó en el mensaje.
+
+- **Relacionado:** [[biocore-llm-decision-flow]]
 
 ## Cortex
 
-El cerebro del sistema. Selecciona qué modelo LLM usar (Gemini/Claude/NVIDIA), ejecuta loops de chat y maneja Circuit Breakers para fallback automático entre 3 proveedores.
+Cerebro del tenant. `UnifiedCortex` recorre los proveedores configurados, y cada uno tiene su propio circuit breaker.
 
 - **Archivo:** `system/implementations/UnifiedCortex.ts`
-- **Implementaciones:** `GeminiCortex`, `ClaudeCortex`, `NvidiaCortex`, `UnifiedCortex` (maestro con fallback)
-- **Hereda de:** `BaseOrchestrator`
-- **Cadena de fallback:** Gemini → Claude → NVIDIA (configurable)
+- **Proveedores:** `system/providers/` contiene `AnthropicProvider`, `GeminiProvider` y `NvidiaProvider`.
+- **Orden:** `providerConfig.primaryProvider`, seguido de `fallbackOrder`. El orden lo define la configuración, no una función de selección por contenido.
+- **Otros archivos:** `GeminiCortex.ts`, `ClaudeCortex.ts` y `NvidiaCortex.ts` están en `system/implementations/`. El flujo activo que usa el servidor es `UnifiedCortex`.
 - **Relacionado:** [[biocore-llm-decision-flow]], [[biocore-execution-flow]]
 
 ## Orquestador
 
-El sistema nervioso. Centraliza la gestión de organismos, unifica herramientas y difunde señales de mutación. Es la capa que conecta todo.
+Centro del sistema. Conecta organismos, unifica herramientas y difunde mutaciones.
 
 - **Archivo:** `system/BaseOrchestrator.ts`
-- **Métodos clave:** `routeStimulus()`, `getUnifiedTools()`, `executeAction()`
+- **Métodos clave:** `routeStimulus()`, `getUnifiedTools()`, `executeAction()`, `trackInput()`, `queryReflex()`, `saveReflex()`
 - **Relacionado:** [[biocore-stimulus-sources]], [[biocore-architecture]]
 
 ## Organismo
 
-Un sub-agente especializado que controla una célula MCP como proceso hijo. Se comunica con la célula via JSON-RPC 2.0 (Model Context Protocol).
+Controlador de una célula. Lanza la célula como proceso hijo y se comunica con ella por MCP.
 
 - **Archivo:** `organisms/BaseOrganisms.ts`
-- **Métodos clave:** `stimulate()`, `inspectTools()`, `callTool()`
-- **Relacionado:** [[biocore-execution-flow]]
+- **Métodos clave:** `stimulate()`, `inspectTools()`, `callTool()`, `getAllowedCells()`
+- **Relacionado:** [[biocore-mutation-lifecycle]]
 
 ## Célula
 
-Un servidor MCP dinámico que muta según el estímulo recibido. Cuando muta, cierra las moléculas anteriores e instancia las nuevas.
+Servidor MCP que cambia de tipo según el estímulo. Expone solo las herramientas del tipo activo.
 
 - **Archivo:** `cells/CellServer.ts`
-- **Estados posibles:** `undifferentiated`, `sensory`, `memory`, `filesystem`, `communication`, `versioncontrol`, `http`, `system`, `monitor`
-- **Relacionado:** [[biocore-mutation-lifecycle]], [[biocore-tools-comparison]]
+- **Tipos con registro integrado:** `memory`, `http`, `filesystem`, `communication`, `versioncontrol`, `sensory`, `system`, `realtime`
+- **Sin registro integrado:** `sensory_advanced` y `monitor`. Están en `registry.json` y no se anuncian al LLM.
+- **Estado inicial:** `undifferentiated`, sin herramientas.
+- **Relacionado:** [[biocore-mutation-lifecycle]], [[biocore-llm-decision-flow]]
 
 ## Molécula
 
-Lógica de negocio reutilizable. Cada molécula implementa una capacidad concreta (BD, HTTP, scraping, email, etc.). Son agnósticas al LLM.
+Capacidad concreta con recursos propios (base de datos, HTTP, scraping, email, Git, sistema, WebSocket). Una molécula no depende de otra.
 
 - **Directorio:** `molecules/*.ts`
-- **Moléculas:** DatabaseMolecule, HTTPMolecule, ScraperMolecule, FileSystemMolecule, GmailMolecule, GitMolecule, SystemMolecule, WhatsAppMolecule
+- **Moléculas de capacidad:** `DatabaseMolecule`, `HTTPMolecule`, `ScraperMolecule`, `FileSystemMolecule`, `GmailMolecule`, `WhatsAppMolecule`, `GitMolecule`, `SystemMolecule`, `WebSocketMolecule`
+- **Moléculas de soporte:** `ReflexMolecule` (historial de secuencias), `HistoryMolecule`
+- **Molécula de dominio de ejemplo:** `ExampleMolecule`
 - **Relacionado:** [[biocore-mutation-lifecycle]]
 
 ## Átomo
 
-Funciones puras sin estado ni efectos secundarios. Utilidades compartidas por todas las capas.
+Función pura sin estado ni efectos. No importa moléculas, células, organismos ni el sistema.
 
 - **Directorio:** `atoms/*.ts`
-- **Funciones:** `cleanSchemaForLLM()`, `deduplicateTools()`, `formatToolsForAnthropic()`, `formatToolsForGemini()`, `formatToolsForOpenAI()`, `chooseModel()`, `resolveTools()`
+- **Funciones de esquema y herramientas:** `cleanSchemaForLLM()`, `deduplicateTools()` (`schema.ts`); `formatToolsForAnthropic()`, `formatToolsForGemini()`, `formatToolsForOpenAI()` (`toolFormat.ts`)
+- **Funciones de registro:** `resolveTools()`, `resolveAllTools()` (`registry.ts`)
+- **Funciones de Jev:** `jevEvaluateAll()` (`reflexSelector.ts`); `preCellRoute()` (`cellRouter.ts`); `extractUrl()`, `isScrapeStoreSequence()` (`chainExtraction.ts`)
+- **Exportado sin uso en el chat:** `chooseModel()` (`modelSelection.ts`). El proveedor se elige por configuración, no por esta función.
 - **Relacionado:** [[biocore-what-llm-receives]]
 
 ## Estímulo (IStimulus)
 
-Una señal que provoca la mutación de una célula. Puede venir de cualquier fuente (LLM, API, CLI, webhook, scheduler, etc.). Incluye trazabilidad: `type`, `source`, `metadata`, `timestamp`.
+Orden de mutación con trazabilidad: `type`, `source`, `metadata` y `timestamp`.
 
 - **Archivo:** `system/interfaces/IStimulus.ts`
 - **Relacionado:** [[biocore-stimulus-sources]], [[biocore-execution-flow]]
 
 ## Mutación
 
-El proceso por el cual una célula cambia de estado. Cierra moléculas anteriores (`disposeMolecules`), instancia nuevas (`initializeMolecules`) y registra herramientas MCP (`registerToolsForType`).
+Cambio de tipo de una célula. Se hace en dos pasos: `disposeMolecules()` libera el tipo anterior y `activateTypes(tipo)` activa el nuevo a partir de la cadena de `parent`.
 
-- **Relacionado:** [[biocore-mutation-lifecycle]], [[biocore-tools-comparison]]
+- **Archivo:** `cells/CellServer.ts`
+- **Relacionado:** [[biocore-mutation-lifecycle]]
 
 ## Registry
 
-Archivo JSON que define qué tipos de célula existen, qué herramientas tiene cada una y las relaciones de herencia entre tipos.
+Archivo JSON que define los tipos de célula: `type`, `description`, `parent` opcional y `tools` declaradas.
 
-- **Archivo:** `config/registry.json`
+- **Archivos:** `config/registry.json` (core) y `config/domain-registry.json` (dominio)
+- **Fusión:** `loadApplicationRegistry()` en `config/mergeRegistry.ts`. `assertUniqueTypes` lanza `RegistryConfigurationError` si un registro repite un tipo.
+- **Nota:** `tools` es declarativo. La herramienta solo se anuncia si la célula tiene un handler registrado.
 - **Relacionado:** [[biocore-what-llm-receives]], [[biocore-llm-decision-flow]]
 
-## Memoria Refleja (Reflex)
+## Memoria Refleja (historial)
 
-Sistema de memoria procedural que aprende secuencias exitosas de herramientas y las reutiliza sin LLM. Usa embeddings semánticos locales para comparar intención, no palabras exactas.
+`ReflexMolecule` guarda las secuencias de herramientas de cada sesión que terminó bien. `saveReflex()` lo llama al final de `chat()`.
 
 - **Archivo:** `molecules/ReflexMolecule.ts`
-- **Modo:** solo HINT. Jev sugiere la cadena y el orquestador decide. El modo REFLEX (ejecución directa por similitud y conteo de éxitos) se eliminó: ver [[biocore-decisions]], decisión 12
+- **No decide nada.** `DefaultReflexExecutor.queryReflex` consulta a Jev sobre el catálogo de `tools.json`, no sobre estas secuencias guardadas. Las secuencias guardadas no son candidatas a ejecución.
+- **Modo:** solo HINT. Los modos de ejecución directa y los umbrales adaptativos se retiraron. Ver [[biocore-decisions]].
 - **Relacionado:** [[biocore-architecture]], [[biocore-execution-flow]]
 
-## ArgTemplate
+## Extracción de parámetros (`paramExtractor`)
 
-Plantilla parametrizada que captura la estructura de argumentos de un reflex exitoso. Usa placeholders (`$URL`, `$TABLE`, `$PATH`) que se interpolan con valores del input actual al re-ejecutar.
+Extrae URL, email, tabla, ruta, consulta y rama del texto. Solo lo usa `HeadlessOrchestrator` a través de `extractParamsForReflex`. La interpolación de plantillas de argumentos se retiró.
 
-- **Archivo:** `atoms/interpolation.ts`
-- **Funciones:** `deriveTemplate()`, `interpolateTemplate()`, `serializeArgTemplates()`
-- **Relacionado:** [[biocore-architecture]]
-
-## Interpolation Engine
-
-Componente que resuelve placeholders en un ArgTemplate extrayendo valores del texto del usuario. Si un placeholder requerido (URL, email, path, table) no se encuentra, degrada a HINT_Mode.
-
-- **Archivo:** `atoms/interpolation.ts`, `atoms/paramExtractor.ts`
-- **Función principal:** `interpolateTemplate(template, extractedParams)`
-- **Relacionado:** [[biocore-architecture]]
-
-## Temporal Decay
-
-Factor multiplicativo que reduce el peso de reflexes antiguos. Usa decaimiento exponencial con half-life de 30 días: un reflex sin usar por 30 días tiene 50% de peso.
-
-- **Archivo:** `molecules/ReflexMolecule.ts`
-- **Fórmula:** `0.5 ^ (daysSinceUse / halfLifeDays)`
-- **Relacionado:** [[biocore-architecture]]
-
-## Adaptive Threshold
-
-Umbral dinámico de similitud para activar modo REFLEX. Reflexes con alto ratio de éxito se activan a menor similitud (hasta 0.875); reflexes con fallos requieren mayor similitud (hasta 1.0).
-
-- **Archivo:** `molecules/ReflexMolecule.ts`
-- **Rango:** [0.80, 1.0], default 0.95
+- **Archivo:** `atoms/paramExtractor.ts`
 - **Relacionado:** [[biocore-architecture]]
 
 ## MCP External Server
 
-Servidor MCP que expone BioCore como proveedor de herramientas para IDEs. Permite que VS Code, Kiro, Cursor o Claude Code consuman las capacidades de BioCore via MCP protocol.
+Servidor que expone BioCore a IDEs como herramientas MCP. Cada herramienta llama a `tenantManager.chat`, así que pasa por el cortex.
 
-- **Archivo (stdio):** `server/MCPExternalServer.ts` — transport local, el IDE lanza el proceso
-- **Archivo (HTTP):** `server/MCPHttpServer.ts` — transport remoto, servidor centralizado para equipos
-- **Herramientas expuestas:** `biocore_execute`, `biocore_scrape`, `biocore_db_query`, `biocore_http`, `biocore_git`, `biocore_email`, `biocore_cli`, `biocore_status`
-- **Protocolo:** MCP Streamable HTTP (spec 2025-03-26)
+- **Transporte stdio:** `server/MCPExternalServer.ts`. El IDE lanza el proceso.
+- **Transporte HTTP (Streamable HTTP):** `server/MCPHttpServer.ts`, con `startMCPHttpServer`. Pensado para equipos.
+- **Herramientas:** `biocore_execute`, `biocore_scrape`, `biocore_db_query`, `biocore_http`, `biocore_git`, `biocore_email`, `biocore_cli`, `biocore_status`
+- **Relacionado:** [[biocore-stimulus-sources]]
+
+## Perfil de tenant (TenantProfile)
+
+Configuración que decide qué células puede ver un tenant y qué agente de dominio usa.
+
+- **Archivos:** `config/domain-profile.ts` (el perfil del dominio) y `config/profileRegistry.ts` (esquema del perfil)
+- **Campos:** `allowedCells` (mínimo un tipo), `agentFile` (ruta del `.md`), `description` opcional
 - **Relacionado:** [[biocore-architecture]]
 
-## NvidiaCortex
+## Agente de dominio
 
-Implementación de Cortex usando NVIDIA NIM API con modelo Llama 3.3 Nemotron Super 49B. Soporta tool calling completo y actúa como tercer nivel de fallback en el UnifiedCortex.
+Archivo markdown que se agrega como mensaje de sistema al cortex del tenant.
 
-- **Archivo:** `system/implementations/NvidiaCortex.ts`
-- **Modelo:** `nvidia/llama-3.3-nemotron-super-49b-v1` (optimizado para tareas agénticas)
-- **API:** OpenAI-compatible (`integrate.api.nvidia.com/v1/chat/completions`)
-- **Formato tools:** `formatToolsForOpenAI()` — formato function calling estándar OpenAI
-- **Relacionado:** [[biocore-architecture]]
-
-## Perfil de Tenant (TenantProfile)
-
-Configuración por industria que determina qué capacidades tiene un tenant. Define las células permitidas y el archivo de agente de dominio.
-
-- **Archivo:** `config/tenant-profiles.json`
-- **Perfiles:** `dev`, `restaurant`, `clinic`, `ecommerce`
-- **Campos:** `allowedCells` (tipos de célula), `agentFile` (prompt de dominio)
-- **Relacionado:** [[biocore-architecture]]
-
-## Agente de Dominio
-
-Archivo markdown que define el system prompt completo para una industria. Incluye rol, vocabulario, capacidades, flujos típicos y reglas de comportamiento.
-
-- **Directorio:** `config/agents/*.md`
-- **Archivos:** `restaurant-agent.md`, `dev-agent.md`, `clinic-agent.md`, `ecommerce-agent.md`
-- **Se inyecta como:** mensaje `role: "system"` al crear el tenant
-- **Relacionado:** [[biocore-architecture]]
+- **Archivos:** `config/domain-agent.md` (el que referencia el perfil del dominio) y `config/agents/dev-agent.md`
+- **Carga:** `TenantManager.loadAgentFile()`, al crear el cortex del tenant
+- **Relacionado:** [[biocore-what-llm-receives]]
 
 ## TenantDatabaseManager
 
-Gestiona bases de datos aisladas por tenant. Datos de negocio (pedidos, inventario) van en BD separada por tenant; datos del sistema (reflexes, métricas) van en BD compartida.
+Da una base de datos aislada a cada tenant para sus datos de negocio.
 
 - **Archivo:** `infrastructure/TenantDatabaseManager.ts`
-- **Estructura:** `data/biocore-shared.db` (compartida) + `data/tenants/{tenantId}.db` (aislada)
+- **Estructura:** `DATABASE_PATH` (compartida, por defecto `./data/biocore.db`) guarda `platform_*`, reflexes y estado de plantillas. `DATABASE_DIR/tenants/<tenant>.db` guarda los datos del negocio.
 - **Relacionado:** [[biocore-architecture]]

@@ -1,10 +1,14 @@
-import { useState, useEffect, useCallback } from "react";
+import { useCallback } from "react";
+import { clearApiCache, useCachedResource } from "../../hooks/useApi";
 
 /** localStorage key for the platform JWT token */
 const PLATFORM_TOKEN_KEY = "platform_token";
 
 /** Base URL for all platform API requests */
 const PLATFORM_API_BASE = "/api/platform/";
+
+/** Prefijo de las claves de caché de la plataforma (separadas de las del tenant). */
+const PLATFORM_CACHE_PREFIX = "platform:";
 
 /**
  * Retrieves the stored platform JWT token from localStorage.
@@ -31,11 +35,13 @@ export function setPlatformToken(token: string): void {
 
 /**
  * Clears the stored platform JWT token, triggering re-auth via PlatformAuthGate.
+ * Also vacía la caché compartida: los datos de la plataforma no deben quedar disponibles.
  * Dispatches a StorageEvent so same-tab listeners can react to the removal.
  */
 export function clearPlatformToken(): void {
   try {
     localStorage.removeItem(PLATFORM_TOKEN_KEY);
+    clearApiCache();
     // StorageEvent only fires cross-tab by default; dispatch manually for same-tab
     globalThis.dispatchEvent(
       new StorageEvent("storage", {
@@ -64,57 +70,42 @@ function platformHeaders(
 }
 
 /**
+ * GET a un endpoint de la plataforma. En 401 limpia el token para que
+ * PlatformAuthGate pida login de nuevo.
+ */
+async function platformGet<T>(endpoint: string): Promise<T> {
+  const url = `${PLATFORM_API_BASE}${endpoint.replace(/^\//, "")}`;
+  const res = await fetch(url, { headers: platformHeaders() });
+
+  if (res.status === 401) {
+    clearPlatformToken();
+    throw new Error("Session expired. Please log in again.");
+  }
+
+  if (!res.ok) {
+    const json = await res.json().catch(() => null);
+    throw new Error(json?.error?.message ?? `HTTP ${res.status}`);
+  }
+
+  const json = await res.json();
+  // Support API envelope format { data, error, meta }
+  return (json.data ?? json) as T;
+}
+
+/**
  * React hook for fetching data from platform API endpoints.
- * Attaches JWT token and handles 401 re-auth by clearing the stored token.
+ * Usa la caché compartida con la clave `platform:<endpoint>`: dos componentes que
+ * piden el mismo endpoint comparten una petición y un temporizador.
  *
  * Requirements: 2.1, 2.5
  */
 export function usePlatformApi<T>(endpoint: string, intervalMs?: number) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const fetchData = useCallback(async () => {
-    try {
-      const url = `${PLATFORM_API_BASE}${endpoint.replace(/^\//, "")}`;
-      const res = await fetch(url, {
-        headers: platformHeaders(),
-      });
-
-      // On 401, clear token so PlatformAuthGate triggers re-auth
-      if (res.status === 401) {
-        clearPlatformToken();
-        setError("Session expired. Please log in again.");
-        return;
-      }
-
-      if (!res.ok) {
-        const json = await res.json().catch(() => null);
-        const msg = json?.error?.message ?? `HTTP ${res.status}`;
-        throw new Error(msg);
-      }
-
-      const json = await res.json();
-      // Support API envelope format { data, error, meta }
-      setData(json.data ?? json);
-      setError(null);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Request failed";
-      setError(message);
-    } finally {
-      setLoading(false);
-    }
-  }, [endpoint]);
-
-  useEffect(() => {
-    fetchData();
-    if (intervalMs) {
-      const id = setInterval(fetchData, intervalMs);
-      return () => clearInterval(id);
-    }
-  }, [fetchData, intervalMs]);
-
-  return { data, error, loading, refetch: fetchData };
+  const fetcher = useCallback(() => platformGet<T>(endpoint), [endpoint]);
+  return useCachedResource<T>(
+    `${PLATFORM_CACHE_PREFIX}${endpoint}`,
+    fetcher,
+    intervalMs,
+  );
 }
 
 /**

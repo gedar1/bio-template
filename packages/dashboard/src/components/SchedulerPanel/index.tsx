@@ -37,7 +37,7 @@ async function schedulerAction(endpoint: string, body: any) {
 }
 
 export function SchedulerPanel({ tenantId }: { readonly tenantId: string }) {
-  const { data, refetch } = useApi<SchedulerData>("/api/scheduler", 5000);
+  const { data, refetch } = useApi<SchedulerData>("/api/scheduler");
   const [showForm, setShowForm] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [formMode, setFormMode] = useState<"chat" | "monitor">("monitor");

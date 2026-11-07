@@ -14,33 +14,11 @@ export type {
   JSONSchemaObject,
   LLMTool,
 } from "../system/providers/providerTypes.js";
-export {
-  computeEmbedding,
-  cosineSimilarity,
-  normalizeSequence,
-  normalizeForEmbedding,
-  serializeEmbedding,
-  deserializeEmbedding,
-  preloadPipeline,
-  isEmbeddingAvailable,
-} from "./embeddings.js";
-export type { Embedding } from "./embeddings.js";
+export { normalizeSequence } from "./sequence.js";
 export {
   extractParamsForReflex,
-  extractParamsFromText,
 } from "./paramExtractor.js";
 export type { ExtractedParams, StepParams } from "./paramExtractor.js";
-export {
-  deriveTemplate,
-  interpolateTemplate,
-  serializeArgTemplates,
-  deserializeArgTemplates,
-} from "./interpolation.js";
-export type {
-  TemplatePlaceholder,
-  ArgTemplate,
-  ReflexArgTemplates,
-} from "./interpolation.js";
 export { summarizeToolResult } from "./toolResultFormatter.js";
 export { getModuleDir, getProjectRoot } from "./paths.js";
 export { preCellRoute } from "./cellRouter.js";

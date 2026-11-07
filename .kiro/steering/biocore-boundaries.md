@@ -27,7 +27,7 @@ Atoms → Molecules → Cells → Organisms → Orchestrator / Cortex
 
 ## Límite core/dominio
 
-- En `bio-core`, el motor genérico vive en `packages/core/src`; las extensiones de industria viven en otro paquete, por ejemplo `packages/restaurant/src/molecules/`.
+- En `bio-core`, el motor genérico vive en `packages/core/src`; las extensiones de industria viven en otro paquete, por ejemplo `packages/restaurant/src/molecules/` en el repositorio bio-core. Ese paquete no existe en este template.
 - En `bio-template`, el checkout mínimo concentra la extensión en `packages/core/src`: usa `molecules/ExampleMolecule.ts`, `config/domain-registry.json`, `config/domain-profile.ts` y `config/profileRegistry.ts`. No inventes `packages/domain/` si no existe en el checkout.
 - El código de dominio puede importar contratos y utilidades públicas de core; core no debe importar una molecule, perfil o agente específico del dominio.
 - El registry y el perfil deben describir la misma capacidad: el `type` de la cell, los nombres de tools y `allowedCells` deben coincidir.

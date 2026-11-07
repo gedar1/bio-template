@@ -13,7 +13,7 @@ export default function App() {
       <RoleProvider>
         <ProfileProvider tenantId="default">
           <ToastProvider>
-            {/* <DashboardLayout /> */}
+            <DashboardLayout />
             {/* Espacio de trabajo del tenant (chat mock por ahora). */}
             <WorkspaceShell tenantId={DEFAULT_TENANT_ID} />
           </ToastProvider>

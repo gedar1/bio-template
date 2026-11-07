@@ -1,8 +1,5 @@
 // ─── Strategy Interfaces ──────────────────────────────────────
-export type {
-  IReflexExecutor,
-  ReflexCollaborators,
-} from "./IReflexExecutor.js";
+export type { IReflexExecutor } from "./IReflexExecutor.js";
 export type { IHistoryManager } from "./IHistoryManager.js";
 export type { IStructuredConversation } from "./IStructuredConversation.js";
 export type { IPerfTracker, PerfSummary } from "./IPerfTracker.js";

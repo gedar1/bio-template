@@ -20,7 +20,6 @@ import type {
 export const WebSocketPanel: React.FC<WebSocketPanelProps> = ({ tenantId }) => {
   const { data, loading, error, refetch } = useApi<WebSocketApiResponse>(
     `/api/websocket?tenantId=${tenantId}`,
-    5000,
   );
 
   const [broadcastMessage, setBroadcastMessage] = useState("");

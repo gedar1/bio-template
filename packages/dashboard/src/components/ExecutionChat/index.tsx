@@ -9,7 +9,7 @@ import {
   isTerminalStage,
   reduceExecutionEvent,
 } from "./executionReducer";
-import { postChat } from "../../hooks/useApi";
+import { postChat, refreshApi } from "../../hooks/useApi";
 import { RunCard } from "./components";
 import { IS_STUDIO_MODE } from "../../utils/deploymentMode";
 import { BRAND_NAME } from "../../utils/brand";
@@ -59,6 +59,7 @@ export const ExecutionChat: React.FC<ExecutionChatProps> = ({ tenantId }) => {
     void (async () => {
       try {
         const result = await postChat(prompt, tenantId);
+        refreshApi("/api/tools", "/api/reflex", "/api/mutations");
         if (result?.error) throw new Error(String(result.error));
         if (typeof result?.response !== "string") {
           throw new Error("Respuesta inválida del backend");

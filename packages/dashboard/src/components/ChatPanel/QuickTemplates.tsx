@@ -17,7 +17,7 @@ import {
   Truck,
   Zap,
 } from "lucide-react";
-import { useApi, authHeaders } from "../../hooks/useApi";
+import { useApi, authHeaders, refreshApi } from "../../hooks/useApi";
 import { useProfile } from "../../context/ProfileContext";
 import { StepIndicator } from "../StepIndicator";
 import type { TaskTemplate, TemplateParameter } from "../../types/dashboard";
@@ -65,7 +65,6 @@ export function QuickTemplates({
 
   const { data } = useApi<{ templates: TaskTemplate[]; total: number }>(
     `/api/templates?profile=${profile}`,
-    60000,
   );
 
   const templates = (data?.templates || []).filter(
@@ -112,6 +111,7 @@ export function QuickTemplates({
       });
 
       const result = await res.json();
+      refreshApi("/api/tools", "/api/reflex", "/api/mutations");
 
       onTemplateResult({
         templateName: selectedTemplate.name,

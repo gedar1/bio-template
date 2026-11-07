@@ -16,7 +16,7 @@ export function TenantSelector({
   onChange,
 }: Readonly<TenantSelectorProps>) {
   const [newId, setNewId] = useState("");
-  const { data } = useApi<TenantsData>("/api/tenants", 5000);
+  const { data } = useApi<TenantsData>("/api/tenants");
 
   const addTenant = () => {
     if (newId.trim()) {

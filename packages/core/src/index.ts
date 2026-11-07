@@ -56,8 +56,6 @@ export type {
 } from "./system/NervousSystem.js";
 export * from "./system/interfaces/IOrchestrator.js";
 export * from "./system/interfaces/IStimulus.js";
-export type { ReflexFlow } from "./system/reflexSeed.js";
-export { seedReflexes, FLOWS as CORE_FLOWS } from "./system/reflexSeed.js";
 
 // ─── System Strategy Interfaces ───────────────────────────────
 export * from "./system/interfaces/IUsageMetricsSink.js";

@@ -737,15 +737,4 @@ export class HeadlessOrchestrator extends BaseOrchestrator {
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
-
-  /**
-   * Extrae el tipo de célula del primer paso de mutación en un reflex.
-   * Ejemplo: step.action = "mutate:memory" → retorna "memory".
-   */
-  private extractCellTypeFromReflex(match: ReflexMatch): string {
-    const mutateStep = match.record.steps.find((s) =>
-      s.action.startsWith("mutate:"),
-    );
-    return mutateStep?.action.replace("mutate:", "") ?? "unknown";
-  }
 }

@@ -135,7 +135,7 @@ Hay dos tipos de base, y cada dato va en una sola:
 - El umbral del gate `scrape_url→db_insert` (`CHAIN_MIN_SIMILARITY = 0.7`).
 - El conteo de éxito en la tabla `reflexes`, como historial. Ya no decide nada.
 
-**Pendiente:** `executeReflex` y la búsqueda vectorial (`findSimilar` se eliminó; `ENABLE_EMBEDDINGS=false` mantiene desactivado el resto del índice) quedan como código sin uso para la siguiente limpieza.
+**Retirado después:** `executeReflex` con sus versiones de esquema, el índice vectorial, los embeddings y las dependencias `@xenova/transformers` y `hnswlib-node`. La columna `embedding` de `reflexes` queda vacía, por compatibilidad con la tabla existente.
 
 ---
 
@@ -145,22 +145,22 @@ Hay dos tipos de base, y cada dato va en una sola:
 
 Se copian desde `.env.example`. Nunca se versiona el `.env` real.
 
-| Variable            | Valor por defecto        | Para qué                                                                                                    |
-| ------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| `DEPLOYMENT_MODE`   | `studio`                 | `studio` o `single`. Ver 3.2.                                                                               |
-| `TENANT_PROFILE`    | `domain` (en el example) | Perfil de industria del despliegue.                                                                         |
-| `PLATFORM_SECRET`   | vacío                    | Activa la API de plataforma (solo en modo `studio`).                                                        |
-| `TYPESAFE_API_KEY`  | vacío                    | Jev. Sin ella, el pre-routing y el guardrail se degradan.                                                   |
-| `GOOGLE_API_KEY`    | —                        | Gemini (proveedor primario).                                                                                |
-| `ANTHROPIC_API_KEY` | —                        | Claude (fallback).                                                                                          |
-| `NVIDIA_API_KEY`    | vacío                    | NVIDIA NIM (fallback).                                                                                      |
-| `LLM_PROVIDER`      | `unified`                | Proveedor inicial.                                                                                          |
-| `DATABASE_TYPE`     | `sqlite`                 | Tipo de base de datos.                                                                                      |
-| `DATABASE_PATH`     | `./biocore.db`           | BD compartida. Se recomienda `./data/biocore.db`.                                                           |
-| `DATABASE_DIR`      | `./data`                 | Directorio de BDs por tenant.                                                                               |
-| `ENABLE_EMBEDDINGS` | `true`                   | Búsqueda semántica local. Se lee en cada uso, no al arrancar. Con `false` no carga el modelo de embeddings. |
-| `PORT`              | `3000`                   | Puerto del backend.                                                                                         |
-| `API_SECRET`        | vacío                    | Vacío = sin autenticación (solo desarrollo).                                                                |
+| Variable            | Valor por defecto        | Para qué                                                       |
+| ------------------- | ------------------------ | -------------------------------------------------------------- |
+| `DEPLOYMENT_MODE`   | `studio`                 | `studio` o `single`. Ver 3.2.                                  |
+| `TENANT_PROFILE`    | `domain` (en el example) | Perfil de industria del despliegue.                            |
+| `PLATFORM_SECRET`   | vacío                    | Activa la API de plataforma (solo en modo `studio`).           |
+| `TYPESAFE_API_KEY`  | vacío                    | Jev. Sin ella, el pre-routing y el guardrail se degradan.      |
+| `GOOGLE_API_KEY`    | —                        | Gemini (proveedor primario).                                   |
+| `ANTHROPIC_API_KEY` | —                        | Claude (fallback).                                             |
+| `NVIDIA_API_KEY`    | vacío                    | NVIDIA NIM (fallback).                                         |
+| `LLM_PROVIDER`      | `unified`                | Proveedor inicial.                                             |
+| `DATABASE_TYPE`     | `sqlite`                 | Tipo de base de datos.                                         |
+| `DATABASE_PATH`     | `./biocore.db`           | BD compartida. Se recomienda `./data/biocore.db`.              |
+| `DATABASE_DIR`      | `./data`                 | Directorio de BDs por tenant.                                  |
+| `ENABLE_EMBEDDINGS` | `true`                   | Obsoleta: ya no tiene efecto. La búsqueda semántica se retiró. |
+| `PORT`              | `3000`                   | Puerto del backend.                                            |
+| `API_SECRET`        | vacío                    | Vacío = sin autenticación (solo desarrollo).                   |
 
 ### 4.2 Variables del dashboard (`packages/dashboard/.env`)
 
@@ -205,11 +205,10 @@ Ordenado por prioridad:
 
 - **`ReflexMolecule.runMigration()` borra `reflexes_atomic` y `reflex_dependencies` en cada arranque**, sin respaldo. Es correcto mientras esas tablas estén vacías u obsoletas, pero debería retirarse una vez confirmado el estado de todas las BDs.
 - **`data/biocore.db`** se copió desde la raíz. Confirmar que el archivo de la raíz ya no se usa antes de borrarlo.
-- **`CellServer.executeDetectedChain()` usa `as any`** para acceder a las moléculas. Tipar las moléculas con sus interfaces.
 - **Lint:** `SectionNav/index.tsx` exporta constantes junto al componente y genera 3 errores de `react-refresh/only-export-components`. Vienen del código original. Mover las constantes a un archivo aparte.
-- **`docs/ATOMIC_REFLEXES_CATALOG.md`** describe el modelo de átomos en BD que ya no aplica. Revisar o retirar.
-- **Dos caminos de cadenas.** El chat usa `UnifiedCortex` y el gate de `scrape_url→db_insert`. `TenantManager.evaluateSemanticRoute` (`/api/platform/semantic_route`) tiene su propio `executeDetectedChain`, sin el gate de URL. Unificarlos o retirar uno.
-- **`platform_tenants.profile` tiene un `CHECK` con lista fija de perfiles** (`dev`, `domain`, `restaurant`, `clinic`, `ecommerce`). Un perfil nuevo falla al registrar métricas hasta quitar el `CHECK`.
+- **Ruta semántica retirada.** `POST /api/platform/semantic_route`, `TenantManager.evaluateSemanticRoute` y su pipeline de ranking se eliminaron. Con ellos se fueron la herramienta `execute_detected_chain`, `ReflexOrchestrator` y `types/semantic.ts`. El chat no cambió: sigue usando el gate de `UnifiedCortex`.
+- **Perfiles de plataforma.** El template solo tiene el perfil `domain`. Se retiraron `dev`, `restaurant`, `clinic` y `ecommerce` del esquema, de los tipos del dashboard y de las rutas de plantillas y agentes. Los endpoints de restaurante de `DashboardRoutes` eran stubs que devolvían listas vacías, y también se retiraron. Los casos de uso futuros deben agregar su perfil y sus widgets. Las instalaciones existentes conservan en `platform_tenants` el `CHECK` anterior, que acepta esos valores; no se migró la tabla.
+- **Seed de reflexes retirado.** `reflexSeed.ts` insertaba flujos sintéticos en el historial. Se retiró el seed del arranque y la columna `arg_templates_json` de `reflexes`; la base se respaldó antes de eliminarla.
 - **`dist/system/pendingChainStore.*`** quedó de la ubicación anterior del store. Se elimina al limpiar `dist`.
 - **Limpieza de código sin uso.** `knip` está configurado en `packages/core/knip.json`. Quedan exports sin uso (grupo A) y `PersistentHistory.ts` pendientes de decisión. `@opentelemetry/sdk-trace-base` está declarado pero no se importa directamente.
 

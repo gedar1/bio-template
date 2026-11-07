@@ -1,3 +1,4 @@
+import { clearApiCache } from "../hooks/useApi";
 import {
   createContext,
   useContext,
@@ -45,10 +46,12 @@ function getStoredToken(): string | null {
 
 function setStoredToken(token: string): void {
   sessionStorage.setItem(TENANT_TOKEN_KEY, token);
+  clearApiCache();
 }
 
 function clearStoredToken(): void {
   sessionStorage.removeItem(TENANT_TOKEN_KEY);
+  clearApiCache();
 }
 
 // ─── Context Interface ──────────────────────────────────────────────────────

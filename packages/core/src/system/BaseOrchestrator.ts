@@ -8,12 +8,7 @@ import {
   GuardrailBlockedError,
   MutationError,
 } from "../errors.js";
-import {
-  deduplicateTools,
-  preloadPipeline,
-  summarizeToolResult,
-  checkExecutionSafety,
-} from "../atoms/index.js";
+import { deduplicateTools, checkExecutionSafety } from "../atoms/index.js";
 import type { ILogger } from "../config/ILogger.js";
 import type { IOrchestrator } from "./interfaces/IOrchestrator.js";
 import type { IStimulus } from "./interfaces/IStimulus.js";
@@ -125,11 +120,6 @@ export abstract class BaseOrchestrator implements IOrchestrator {
     return this.sessionId;
   }
 
-  /** Mapa de versiones de esquema por herramienta (delegado al ReflexExecutor). */
-  get toolVersionMap(): Map<string, string> {
-    return this.reflexExecutor.toolVersionMap;
-  }
-
   /**
    * Inyecta la función de resumen para compresión inteligente de historial.
    * Llamar en el constructor del Cortex concreto tras inicializar el cliente LLM.
@@ -167,18 +157,7 @@ export abstract class BaseOrchestrator implements IOrchestrator {
     await Promise.all([
       ...this.organisms.map((org) => org.initializeContext()),
       this.reflexExecutor.initialize(),
-      measureSpan(
-        "Atom",
-        "embedding_preload",
-        async () => {
-          const ms = await preloadPipeline();
-          this.log.info("Embedding pipeline ready", { durationMs: ms });
-          return ms;
-        },
-        { "embedding.source": "preload" },
-      ),
     ]);
-    await this.buildToolVersionMap();
     this.log.info("Sistema nervioso listo");
   }
 
@@ -366,35 +345,6 @@ export abstract class BaseOrchestrator implements IOrchestrator {
     return this.reflexExecutor.queryReflex(input, allowedCells);
   }
 
-  /**
-   * Ejecuta una secuencia refleja directamente sin invocar el LLM.
-   * Delega en el ReflexExecutor, proveyéndole los colaboradores de orquestación.
-   */
-  public async executeReflex(
-    match: ReflexMatch,
-    args: Record<string, Record<string, unknown>> = {},
-  ): Promise<string[]> {
-    return this.reflexExecutor.executeReflex(match, args, {
-      routeStimulus: (stimulus) => this.routeStimulus(stimulus),
-      executeAction: (name, actionArgs) => this.executeAction(name, actionArgs),
-    });
-  }
-
-  /**
-   * Construye el mapa de versiones de esquema inspeccionando los organismos
-   * y delegando el mapeo al ReflexExecutor. Llamado durante init().
-   */
-  private async buildToolVersionMap(): Promise<void> {
-    const allTools: any[] = [];
-    for (const org of this.organisms) {
-      const tools = await org.inspectTools();
-      if (tools && Array.isArray(tools)) {
-        allTools.push(...tools);
-      }
-    }
-    this.reflexExecutor.buildToolVersionMap(allTools);
-  }
-
   /** Método abstracto para que cada implementación maneje su chat específico. */
   public abstract chat(userMessage: string): Promise<void>;
 
@@ -445,71 +395,4 @@ export abstract class BaseOrchestrator implements IOrchestrator {
       yield last.content;
     }
   }
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-/**
- * Formats raw reflex execution results into a user-friendly message.
- * Hides internal details (mutations, raw JSON) and shows a clean summary.
- */
-function formatReflexResults(results: string[], steps: ReflexStep[]): string {
-  const toolResults: string[] = [];
-
-  for (let i = 0; i < results.length; i++) {
-    const step = steps[i];
-    const result = results[i];
-
-    if (step.action.startsWith("mutate:")) {
-      continue;
-    }
-
-    toolResults.push(summarizeToolResult(step.action, result));
-  }
-
-  const sequence = steps.map((s) => s.action).join("->");
-
-  if (toolResults.length === 0) {
-    return `sequence:${sequence}\n✅ Tarea completada.`;
-  }
-
-  return `sequence:${sequence}\n✅ Tarea completada:\n${toolResults.join("\n")}`;
-}
-
-/**
- * Formats a reflex execution error into a user-friendly message.
- * Includes the sequence metadata with a failedStep marker for the frontend.
- */
-function formatReflexError(
-  partialResults: string[],
-  steps: ReflexStep[],
-  failedStepIndex: number,
-  failedStep: string,
-  errorMessage: string,
-): string {
-  const sequence = steps.map((s) => s.action).join("->");
-
-  const successSummaries: string[] = [];
-  let resultIdx = 0;
-  for (let i = 0; i < failedStepIndex; i++) {
-    const step = steps[i];
-    if (step.action.startsWith("mutate:")) continue;
-    if (resultIdx < partialResults.length) {
-      successSummaries.push(
-        summarizeToolResult(step.action, partialResults[resultIdx]),
-      );
-      resultIdx++;
-    }
-  }
-
-  let output = `[sequence:${sequence}][failedStep:${failedStepIndex}]\n`;
-  output += `❌ Error en paso "${failedStep}":\n`;
-  output += `${errorMessage}\n`;
-
-  if (successSummaries.length > 0) {
-    output += `\nPasos completados antes del error:\n`;
-    output += successSummaries.join("\n");
-  }
-
-  return output;
 }

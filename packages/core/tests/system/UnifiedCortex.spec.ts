@@ -11,16 +11,11 @@ import type { IReflexExecutor } from "../../src/system/strategies/IReflexExecuto
 
 function reflexExecutor(): IReflexExecutor {
   return {
-    toolVersionMap: new Map(),
     initialize: async () => undefined,
     trackInput: () => undefined,
     recordStep: () => undefined,
     queryReflex: async () => null,
     saveReflex: async () => undefined,
-    executeReflex: async () => [],
-    buildToolVersionMap: () => undefined,
-    getSchemaVersions: () => ({}),
-    checkSchemaVersions: () => ({ compatible: true, mismatches: [] }),
   };
 }
 

@@ -4,24 +4,37 @@ inclusion: manual
 
 # Crear un perfil de dominio
 
-Un perfil limita las capacidades visibles para un tenant y selecciona el agente de dominio. No es un sustituto del registry ni una lista de lógica de negocio.
+Un perfil decide qué células puede ver un tenant y qué agente de dominio carga. No reemplaza al registry ni contiene lógica de negocio.
 
-## Procedimiento en BioCore
+## Dónde vive un perfil
 
-1. Define el perfil en `packages/core/src/config/tenant-profiles.json` con un id válido, `allowedCells` y `agentFile`. Usa solo tipos presentes en `config/registry.json`.
-2. Crea o edita el agente en `packages/core/src/config/agents/<profile>-agent.md`. Incluye rol, vocabulario, flujos y reglas; no pongas implementación TypeScript en el prompt.
-3. Si el perfil corresponde a una industria, coloca sus molecules en el paquete de dominio, por ejemplo `packages/restaurant/src/molecules/`, y registra la integración siguiendo la extensión existente.
-4. Comprueba el aislamiento: `allowedCells` se pasa al organism/cell y filtra `stimulate_differentiation`; los datos de negocio van a la BD del tenant, mientras que reflexes y métricas usan la infraestructura compartida.
+- `packages/core/src/config/domain-profile.ts`: perfil del template (`DOMAIN_PROFILE_ID = "domain"`, `allowedCells`, `agentFile`, `description`).
+- `packages/core/src/config/profileRegistry.ts`: almacén de perfiles. Arranca con el perfil `domain` y valida cada perfil con Zod (`allowedCells` con al menos un tipo, `agentFile` no vacío). `registerDomainProfile()` agrega perfiles adicionales. Hoy ningún código del repositorio lo llama.
+- `TenantManager.getTenant()` toma el perfil de su parámetro, luego de `TENANT_PROFILE`, y luego del perfil por defecto del almacén.
 
-## Procedimiento en bio-template
+No existe `tenant-profiles.json`. Un perfil que aparezca en otra guía con ese archivo está desactualizado.
 
-1. Usa `packages/core/src/config/domain-profile.ts` como perfil editable. Cambia `DOMAIN_PROFILE_ID`, `allowedCells`, `agentFile` y `description`.
-2. Define las cells específicas en `packages/core/src/config/domain-registry.json`; el `allowedCells` del perfil debe incluirlas junto con las capacidades genéricas que realmente uses, como `memory` o `http`.
-3. Coloca el prompt en la ruta que consume el template (por defecto `packages/core/src/config/domain-agent.md`) y confirma que `agentFile` coincide exactamente.
-4. Registra el perfil con las APIs existentes de `profileRegistry.ts` si el arranque del proyecto lo requiere. No inventes `packages/domain/`: este template mínimo concentra el dominio dentro de `packages/core/src`.
+## Procedimiento
+
+1. Edita `domain-profile.ts` (o registra un perfil nuevo con `registerDomainProfile`). Incluye en `allowedCells` solo los tipos que existen en el registry: los de `domain-registry.json` y las capacidades genéricas que uses, como `memory` o `http`. Un tipo sin registro no se anuncia aunque esté en la lista.
+2. Define las células de dominio en `packages/core/src/config/domain-registry.json`. Ver [[biocore-create-cell]].
+3. Escribe el prompt del agente en `packages/core/src/config/domain-agent.md` (la ruta por defecto que referencia `agentFile`). Incluye rol, vocabulario, flujos y reglas. No pongas código TypeScript en el prompt.
+4. Confirma que `agentFile` coincide exactamente con la ruta relativa que lee `TenantManager.loadAgentFile()`. Si no coincide, el tenant arranca sin el agente y no hay error visible.
+5. Pon `TENANT_PROFILE=domain` en `.env`. `.env.example` ya lo trae.
+
+## Qué no hacer
+
+- No crees `packages/domain/` ni otros paquetes. El template concentra el dominio en `packages/core/src`.
+- No agregues tipos a `allowedCells` que no tengan registro. Son invisibles para el LLM.
 
 ## Verificación
 
-- Rechaza tipos que no estén en el registry o que no deban estar disponibles para el tenant.
-- Prueba un perfil con una cell permitida y otra no permitida.
-- Ejecuta `npm test` y `npm run build:ts`; para el template, ejecuta `npm --prefix ..\\bio-template run validate-template` cuando el script esté disponible.
+- `npx tsc --noEmit` desde `packages/core`.
+- Pruebas desde la raíz: `npx vitest --run --config packages/core/vitest.config.ts`.
+- Validador del contrato del template desde la raíz: `npm run validate-template`.
+- Comprueba con un perfil permitido y otro no permitido que `stimulate_differentiation` solo lista los tipos del primero.
+
+## Relaciones
+
+- Células de dominio: [[biocore-create-cell]]
+- Límites entre core y dominio: [[biocore-boundaries]]
