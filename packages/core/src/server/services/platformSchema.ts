@@ -20,13 +20,7 @@ const log = createLogger("PlatformSchema");
  *   - idx_audit_time: Búsqueda de auditoría por timestamp
  */
 /** Perfiles aceptados en platform_tenants. Incluye 'domain' (perfil del template). */
-const PLATFORM_TENANT_PROFILES = [
-  "dev",
-  "domain",
-  "restaurant",
-  "clinic",
-  "ecommerce",
-] as const;
+const PLATFORM_TENANT_PROFILES = ["domain"] as const;
 
 /**
  * Reconstruye platform_tenants si su CHECK de profile no incluye 'domain'.
@@ -108,7 +102,7 @@ export function initializePlatformSchema(
     CREATE TABLE IF NOT EXISTS platform_tenants (
       tenant_id     TEXT PRIMARY KEY,
       display_name  TEXT NOT NULL,
-      profile       TEXT NOT NULL CHECK(profile IN ('dev', 'restaurant', 'clinic', 'ecommerce')),
+      profile       TEXT NOT NULL CHECK(profile IN ('domain')),
       status        TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'inactive', 'degraded')),
       token_limit   INTEGER NOT NULL DEFAULT 0,
       api_key_hash  TEXT,

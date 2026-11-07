@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Brain, Zap } from "lucide-react";
-import { postChatStream } from "../../hooks/useApi";
+import { postChatStream, refreshApi } from "../../hooks/useApi";
 import { StepIndicator } from "../StepIndicator";
 import { QuickTemplates } from "./QuickTemplates";
 import type {
@@ -203,6 +203,7 @@ export function ChatPanel({ tenantId }: Readonly<ChatPanelProps>) {
         { role: "assistant", content: `Error: ${message}` },
       ]);
     } finally {
+      refreshApi("/api/tools", "/api/reflex", "/api/mutations");
       setSending(false);
     }
   };

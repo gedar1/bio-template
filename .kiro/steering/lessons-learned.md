@@ -4,8 +4,6 @@ inclusion: manual
 
 # Lecciones Aprendidas — Errores a Evitar
 
-Fuente completa: #[[file:docs/architecture/LESSONS_LEARNED.md]]
-
 ## Reglas críticas
 
 1. **LLM analiza, código ejecuta** — Acciones críticas (alertas, pagos, borrado) nunca dependen de que el LLM elija la herramienta correcta. El código muta y ejecuta de forma determinística.

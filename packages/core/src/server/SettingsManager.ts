@@ -1,3 +1,4 @@
+import { getDefaultProfile } from "../config/profileRegistry.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getModuleDir } from "../atoms/paths.js";
@@ -257,7 +258,7 @@ export class SettingsManager {
     description: string;
     allowedCells: string[];
   } {
-    const profileName = process.env.TENANT_PROFILE || "dev";
+    const profileName = process.env.TENANT_PROFILE || getDefaultProfile();
     const profiles = this.tenantManager.getAvailableProfilesList();
     const profile = profiles[profileName];
 
@@ -387,7 +388,7 @@ export class SettingsManager {
 
   private getTemplateStates(): TemplateState[] {
     const persistedStates = this.templateState.getAllStates();
-    const profileName = process.env.TENANT_PROFILE || "dev";
+    const profileName = process.env.TENANT_PROFILE || getDefaultProfile();
 
     return this.templates
       .filter((t) => !t.profile || t.profile === profileName)
@@ -411,22 +412,6 @@ export class SettingsManager {
       const raw = readFileSync(templatesPath, "utf-8");
       templates.push(...(JSON.parse(raw) as TaskTemplate[]));
 
-      // Load domain templates
-      const domainPaths = [
-        join(process.cwd(), "packages/restaurant/src/config/templates.json"),
-        join(configDir, "../../restaurant/src/config/templates.json"),
-      ];
-
-      for (const domainPath of domainPaths) {
-        try {
-          const domainRaw = readFileSync(domainPath, "utf-8");
-          const domainTemplates = JSON.parse(domainRaw) as TaskTemplate[];
-          templates.push(...domainTemplates);
-          break;
-        } catch {
-          // Domain template file not found, try next
-        }
-      }
 
       log.info(
         { count: templates.length },

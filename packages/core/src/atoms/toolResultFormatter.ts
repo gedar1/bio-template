@@ -137,32 +137,9 @@ const TOOL_FORMATTERS: Record<string, ToolFormatter> = {
 
   system_info: () => `ℹ️ Información del sistema obtenida`,
 
-  // ─── Orders (Restaurant) ────────────────────────────────────────────────
-  create_order: (result) => result,
-
-  update_order_status: (result) => result,
-
   list_orders: (result) => result,
 
-  cancel_order: (result) => result,
-
-  daily_summary: (result) => result,
-
-  // ─── Inventory (Restaurant) ─────────────────────────────────────────────
-  check_stock: (result) => result,
-
-  upsert_inventory: (result) => result,
-
   list_inventory: (result) => result,
-
-  low_stock_alerts: (result) => result,
-
-  decrease_stock: (result) => result,
-
-  // ─── Delivery (Restaurant) ──────────────────────────────────────────────
-  assign_delivery: (result) => result,
-
-  track_delivery: (result) => result,
 
   estimate_time: (result) => result,
 

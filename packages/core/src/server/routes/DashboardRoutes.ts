@@ -1,3 +1,4 @@
+import { getDefaultProfile } from "../../config/profileRegistry.js";
 import { HealthServer } from "../HealthServer.js";
 import type { TenantManager } from "../TenantManager.js";
 import { summarizeToolResult } from "../../atoms/toolResultFormatter.js";
@@ -146,7 +147,7 @@ export function setupDashboardRoutes(
   health.registerData("tenant-profile", async (body?: any) => {
     const tenantId = resolveTenantId(body || {}, tenantAuthService);
     // Leer perfil directamente del env/config sin crear tenant (evita disparar LLM)
-    const profile = process.env.TENANT_PROFILE || "dev";
+    const profile = process.env.TENANT_PROFILE || getDefaultProfile();
     const availableProfiles = tenantManager.getAvailableProfilesList();
     const profileInfo = availableProfiles[profile] || null;
 
@@ -156,22 +157,6 @@ export function setupDashboardRoutes(
       profileInfo,
       availableProfiles,
     };
-  });
-
-  // ─── Endpoints de restaurante (consulta directa, sin LLM) ────────────────
-  health.registerData("orders/active", async (body?: any) => {
-    const tenantId = resolveTenantId(body || {}, tenantAuthService);
-    return { tenantId, orders: [] };
-  });
-
-  health.registerData("orders/summary", async (body?: any) => {
-    const tenantId = resolveTenantId(body || {}, tenantAuthService);
-    return { tenantId, totalOrders: 0, totalRevenue: 0, avgOrderValue: 0 };
-  });
-
-  health.registerData("inventory/alerts", async (body?: any) => {
-    const tenantId = resolveTenantId(body || {}, tenantAuthService);
-    return { tenantId, alerts: [] };
   });
 
   // ─── Ejecución directa de template (sin LLM) ───────────────────────────

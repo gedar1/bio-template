@@ -18,7 +18,6 @@ interface RegistryApiResponse {
 export const RegistryViewer: React.FC<RegistryViewerProps> = () => {
   const { data, loading, error } = useApi<RegistryApiResponse>(
     "/api/registry",
-    30000,
   );
 
   const cells = data?.cells ?? [];

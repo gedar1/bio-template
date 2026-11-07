@@ -2,187 +2,139 @@
 inclusion: always
 ---
 
-# BioCore — Resumen del Proyecto
+# BioCore — Resumen del Proyecto (bio-template)
+
+Este documento describe el **template** `bio-template`, que es la base de arranque para casos de uso concretos (por ejemplo, un software de contabilidad). Lo que no está en este checkout se marca como tal.
 
 ## Qué es
 
-Motor de automatización con mutación dinámica de herramientas. El LLM es opcional — el sistema puede operar con scheduler, webhooks, CLI o API REST.
+Motor de automatización con herramientas que se activan por célula. El LLM es opcional: el flujo de cadenas corre sin él. Las respuestas en lenguaje libre sí usan el LLM.
 
-## Concepto clave
+## Dos caminos para ejecutar
 
-En lugar de cargar 50+ herramientas al LLM, BioCore expone solo `stimulate_differentiation`. El LLM elige un tipo (sensory, memory, filesystem, etc.) y el sistema muta dinámicamente, cargando solo las herramientas relevantes.
+1. **Cadena sugerida por Jev (sin LLM).** `UnifiedCortex.runConversation` consulta a Jev sobre `tools.json` filtrado por las células permitidas del tenant. Si la cadena es `scrape_url→db_insert`, el gate ejecuta sin LLM, pide los datos que falten y responde por el historial. Detalle en `biocore-jev-pre-routing.md`.
+2. **LLM con herramientas por célula.** Cuando no aplica el gate, el LLM recibe la pista de Jev y las herramientas de la célula activa. `stimulate_differentiation` muta la célula al tipo elegido.
 
-## Estructura de carpetas
+## Estructura de carpetas (este checkout)
 
 ```
-bio-core/                           ← Monorepo (npm workspaces)
+bio-template/
+├── package.json                    ← workspaces: packages/core (el dashboard se construye aparte)
 ├── packages/
-│   ├── core/                       ← @bio/core — motor genérico
+│   ├── core/                       ← motor + extensión de dominio del template
 │   │   └── src/
-│   │       ├── atoms/              → Funciones puras (schema, embeddings, interpolation, paths)
-│   │       ├── cells/              → CellServer: servidor MCP dinámico que muta
-│   │       ├── config/             → registry.json, templates.json, agents/*.md, ILogger
-│   │       ├── infrastructure/     → CircuitBreaker, PerfMonitor, RateLimiter, Scheduler
-│   │       ├── molecules/          → Lógica genérica (DB, HTTP, Scraper, Git, Email)
-│   │       ├── organisms/          → Sub-agentes MCP que controlan células
-│   │       ├── server/             → ProductionServer, RouteRegistry, SettingsManager
-│   │       └── system/             → Orquestador + Cortex + strategies/
-│   │           └── strategies/     → IReflexExecutor, IHistoryManager, IPerfTracker + Defaults
-│   ├── restaurant/                 ← @bio/restaurant — vertical de dominio
-│   │   └── src/
-│   │       ├── molecules/          → Orders, Inventory, Delivery
-│   │       └── config/             → registry.ts, profile.ts, agents/
-│   └── dashboard/                  ← @bio/dashboard — Frontend React (Vite + Tailwind)
-│       └── src/
-│           ├── components/         → SettingsPanel, ChatPanel, SectionNav, etc.
-│           ├── hooks/              → useSettings, useApi, etc.
-│           └── types/              → dashboard.types, health.types, platform.types, domain.types
-├── data/                           → Base de datos (runtime)
-│   ├── biocore-shared.db           → Reflexes, embeddings, template state
-│   └── tenants/                    → BD aislada por tenant
-├── docs/                           → Documentación (Doc Engine JSON)
-├── scripts/                        → Utilidades (dead-code-analysis, verify-invariants)
-
+│   │       ├── atoms/              → Funciones puras (schema, toolFormat, interpolation, paths, cellRouter, reflexSelector, chainExtraction, sequence)
+│   │       ├── cells/              → CellServer: servidor MCP que muta por tipo de célula
+│   │       ├── config/             → registry.json, domain-registry.json, tools.json, domain-profile.ts, toolCatalog.ts, applicationComposition.ts
+│   │       ├── infrastructure/     → CircuitBreaker, PerfMonitor, RateLimiter, Scheduler, TenantDatabaseManager
+│   │       ├── molecules/          → DatabaseMolecule, ExampleMolecule (dominio), ReflexMolecule (historial), HTTP, Scraper, Git, Gmail, etc.
+│   │       ├── organisms/          → Controla cada célula como proceso hijo
+│   │       ├── server/             → ProductionServer, HealthServer, TenantManager, rutas HTTP
+│   │       └── system/             → UnifiedCortex, BaseOrchestrator, gate de cadenas
+│   │           └── strategies/     → IReflexExecutor (queryReflex, trackInput, recordStep, saveReflex), IPendingChainStore, IHistoryManager, IPerfTracker
+│   └── dashboard/                  ← Frontend React + Vite + Tailwind (se construye con npm --prefix)
+├── data/                           ← Runtime (no versionar)
+│   ├── biocore.db                  ← Base compartida: plataforma, reflexes (historial), estado de plantillas
+│   ├── backups/                    ← Respaldos antes de migraciones
+│   └── tenants/<tenant>.db         ← Datos del negocio, aislados por tenant
+├── docs/                           ← Documentación en Markdown (START_HERE, DECISIONS-AND-CONFIG, JEV-README)
+└── scripts/                        ← validate-template-contract.ts, utilidades de datos
 ```
+
+En el template no hay `packages/restaurant`. El dominio vive en `packages/core/src/config` (registry, perfil, agente) y en `molecules/ExampleMolecule.ts`. En el monorepo de referencia (`bio-core`) sí existe un paquete de dominio separado.
 
 ## Capas (de arriba a abajo)
 
-1. **Cortex** — Selecciona modelo LLM, ejecuta chat loops (hereda de BaseOrchestrator)
-2. **Orquestador** — Unifica herramientas, difunde mutaciones, delega a estrategias:
-   - `IReflexExecutor` → memoria refleja (query, execute, save)
-   - `IHistoryManager` → historial de conversación (compress, summarize)
-   - `IPerfTracker` → métricas de rendimiento
-3. **Organismo** — Controla célula MCP como proceso hijo
-4. **Célula** — Servidor MCP dinámico, muta según estímulo
-5. **Molécula** — Lógica de negocio reutilizable
-6. **Átomo** — Funciones puras sin estado (incluye `paths.ts` para resolución de rutas)
+1. **Cortex (`UnifiedCortex`).** Elige el proveedor LLM con fallback y circuit breakers. Ejecuta el gate de cadenas antes del LLM.
+2. **Orquestador (`BaseOrchestrator`).** Unifica herramientas, difunde mutaciones y delega en estrategias:
+   - `IReflexExecutor` → consulta a Jev, registro de pasos y guardado de historial.
+   - `IPendingChainStore` → ejecuciones pendientes de un dato del usuario (24 h, en memoria).
+   - `IHistoryManager` → historial de conversación.
+   - `IPerfTracker` → métricas.
+3. **Organismo.** Controla una célula MCP como proceso hijo.
+4. **Célula (`CellServer`).** Servidor MCP que muta de tipo. Solo expone las herramientas del tipo activo.
+5. **Molécula.** Lógica de negocio reutilizable, con `initialize()` y `dispose()`.
+6. **Átomo.** Funciones puras sin estado ni efectos.
 
-## Comandos
+## Tipos de célula (registry.json)
 
-- `npm run build` — Compila todos los paquetes (core → restaurant → dashboard)
-- `npm run dev` — Desarrollo con watch (core + dashboard en paralelo)
-- `npm start` — Ejecuta el sistema
-- `npm run prod` — Servidor de producción (dashboard + API + streaming)
-- `npm run mcp` — MCP Server local (stdio, para uso individual)
-- `npm run mcp:http` — MCP Server HTTP (para equipos, acceso remoto)
-- `npm run dashboard` — Inicia el frontend (Vite dev server)
-- `npm run docs` — Inicia servidor de documentación (http://localhost:4000)
+| Tipo              | Herramientas registradas en código                                                                                                |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| sensory           | `scrape_url`, `extract_links`, `scrape_metadata`                                                                                  |
+| memory            | `db_query`, `db_insert`, `db_find`                                                                                                |
+| filesystem        | `read_file`, `write_file`, `list_files`                                                                                           |
+| communication     | `send_email`, `send_whatsapp`                                                                                                     |
+| versioncontrol    | `git_status`, `git_commit`                                                                                                        |
+| http              | `http_get`, `http_post`                                                                                                           |
+| system            | `execute_cli`, `check_command`, `system_info`                                                                                     |
+| realtime          | `ws_start_server`, `ws_stop_server`, `ws_send`, `ws_broadcast`, `ws_list_clients`, `ws_disconnect_client`                         |
+| monitor           | Hereda de `sensory`; expone `http_get`, `execute_cli`, `check_command`, `system_info`                                             |
+| example (dominio) | `create_record`, `get_record`, `list_records`, `update_record_status`, `delete_record` (definidas en `applicationComposition.ts`) |
 
-### Type checking por paquete
+Las herramientas se registran con `registerTool("nombre", ...)`. Ese nombre es la fuente de verdad: `tools.json` y `registry.json` deben coincidir con él. `scripts/validate-template-contract.ts` lo verifica.
 
-- Backend: `npx tsc --noEmit` (desde `packages/core/`)
-- Frontend: `npx tsc --noEmit --project tsconfig.app.json` (desde `packages/dashboard/`)
-- Tests: `npx vitest --run` (desde raíz o paquete específico)
-- **Invariants gate:** `npx tsx scripts/verify-invariants.ts` (5 checks: build, tests, tsc core, tsc dashboard, MCP tools)
+## Catálogo de Jev
 
-## Tipos de célula disponibles
+- `config/tools.json` contiene nombre → descripción, solo para herramientas que existen en código.
+- `config/toolCatalog.ts` filtra ese archivo por las células permitidas del tenant, usando el registry.
+- Las herramientas de dominio todavía no están en `tools.json`. Es una decisión pendiente.
 
-| Tipo           | Capacidad                                       | Perfil     |
-| -------------- | ----------------------------------------------- | ---------- |
-| sensory        | Web scraping, APIs REST, feeds RSS              | dev        |
-| memory         | SQLite: query, insert, find, update, delete     | todos      |
-| filesystem     | Leer, escribir, copiar, mover archivos          | dev        |
-| communication  | Email (Gmail), WhatsApp                         | todos      |
-| versioncontrol | Git: commit, push, pull, branches               | dev        |
-| http           | HTTP avanzado: GET, POST, PUT, DELETE           | dev        |
-| system         | Ejecución de CLIs (ffmpeg, imagemagick, etc.)   | dev        |
-| monitor        | Monitoreo combinado (scraping + HTTP + sistema) | dev        |
-| orders         | Pedidos: crear, actualizar, listar, cancelar    | restaurant |
-| inventory      | Inventario: stock, alertas, reorden             | restaurant |
-| delivery       | Entregas: asignar, rastrear, estimar tiempo     | restaurant |
+## Perfiles y modos de despliegue
 
-## Tecnologías
+- **Perfil** (`TENANT_PROFILE`): define células permitidas (`allowedCells`), agente `.md` y herramientas. En `domain-profile.ts` el perfil `domain` permite `example`, `memory` y `sensory`.
+- **Modo** (`DEPLOYMENT_MODE`): `studio` (varios clientes gestionados desde la plataforma) o `single` (un solo negocio, `TENANT_ID`).
+- Un despliegue por estudio o negocio. Ver `DECISIONS-AND-CONFIG.md`, secciones 3.2 y 3.9.
 
-- TypeScript, Node.js
-- MCP (Model Context Protocol) para comunicación entre capas
-- Zod para validación
-- SQLite (better-sqlite3) para persistencia
-- Pino para logging
-- OpenTelemetry para telemetría
-- React + Vite para dashboard
+## Bases de datos
 
-## Proveedores LLM (con fallback automático)
+- **Compartida** (`DATABASE_PATH`, por defecto `./data/biocore.db`): tablas `platform_*`, `reflexes` como historial y `template_state`.
+- **Por tenant** (`DATABASE_DIR/tenants/<tenant>.db`): datos del negocio. Ahí caen `db_*` y `ExampleMolecule`.
+- Las rutas relativas se resuelven desde la raíz del proyecto (`resolveDataPath`).
+- `platform_tenants.profile` tiene un `CHECK` con lista fija de perfiles. Ver `DECISIONS-AND-CONFIG.md`.
 
-| Proveedor | Modelo                              | Rol                       |
-| --------- | ----------------------------------- | ------------------------- |
-| Gemini    | gemini-2.0-flash                    | Primario (rápido, gratis) |
-| Claude    | claude-3-5-sonnet-latest            | Fallback 1 (preciso)      |
-| NVIDIA    | nvidia/llama-3.3-nemotron-super-49b | Fallback 2 (tool calling) |
+## Proveedores LLM
 
-El `UnifiedCortex` maneja la cadena de fallback con Circuit Breakers por proveedor. Soporta **hot-reload** via `reconfigure()` — el Admin Settings Panel permite cambiar provider primario y fallback chain sin reiniciar.
+| Proveedor | Rol        | Estado en este checkout                    |
+| --------- | ---------- | ------------------------------------------ |
+| Gemini    | Primario   | API key inválida al momento de la revisión |
+| Claude    | Fallback 1 | Configurable                               |
+| NVIDIA    | Fallback 2 | Configurable                               |
 
-## MCP Server Externo (para IDEs)
+`UnifiedCortex` aplica circuit breakers por proveedor. `reconfigure()` permite cambios en caliente desde el panel de ajustes.
 
-BioCore se puede exponer como servidor MCP para que IDEs (VS Code, Kiro, Cursor, Claude Code) lo consuman como proveedor de herramientas:
+## Comandos (según `package.json`)
 
-- **Local (stdio):** `npm run mcp` — el IDE lanza el proceso directamente
-- **Remoto (HTTP):** `npm run mcp:http` — servidor centralizado para equipos
+- `npm run build` — compila el backend y construye el dashboard.
+- `npm run build:ts` — compila solo el backend (`tsc --build`) y copia los assets de config.
+- `npm run dev` — dev server del dashboard (Vite, puerto 5173).
+- `npm run dev:all` — compila el backend en watch y el dashboard en paralelo.
+- `npm start` — ejecuta el backend desde `packages/core/dist/`. **Requiere `build:ts` tras cada cambio en `src`.**
+- `npm run prod` — build completo y arranque del backend.
+- `npm test` — tests de core con Vitest.
+- `npm run validate-template` — valida el contrato del template.
 
-Herramientas expuestas: `biocore_execute`, `biocore_scrape`, `biocore_db_query`, `biocore_http`, `biocore_git`, `biocore_email`, `biocore_cli`, `biocore_status`.
+Verificación por paquete:
 
-## Multi-Industria (Perfiles por Tenant)
+- Backend: `npx tsc --noEmit` desde `packages/core/`.
+- Dashboard: `npx tsc --noEmit --project tsconfig.app.json` desde `packages/dashboard/`. Tiene un error preexistente en `App.tsx` si `DashboardLayout` no se usa.
 
-BioCore soporta múltiples industrias con un solo deploy. Cada tenant tiene un perfil que determina:
+Scripts que aparecían en versiones anteriores y **no existen en este checkout**: `mcp`, `mcp:http`, `docs`, `verify-invariants`.
 
-- **Células permitidas** — qué tipos de mutación ve el LLM
-- **Agente de dominio** — archivo `.md` con rol, vocabulario, flujos y reglas
-- **Templates** — flujos predefinidos filtrados por perfil
-- **BD aislada** — datos de negocio separados por tenant
+## Memoria refleja
 
-| Perfil     | Células                                                | Agente                                                      |
-| ---------- | ------------------------------------------------------ | ----------------------------------------------------------- |
-| dev        | sensory, memory, filesystem, git, http, system         | `packages/core/src/config/agents/dev-agent.md`              |
-| restaurant | orders, inventory, delivery, communication, memory     | `packages/restaurant/src/config/agents/restaurant-agent.md` |
-| clinic     | appointments, patients, billing, communication, memory | (futuro: @bio/clinic)                                       |
-| ecommerce  | catalog, orders, analytics, marketing, communication   | (futuro: @bio/ecommerce)                                    |
+`ReflexMolecule` guarda cadenas ejecutadas como historial. No decide nada: los umbrales adaptativos, el modo `reflex` y los embeddings se retiraron. La columna `embedding` queda vacía por compatibilidad.
 
-Configuración: `TENANT_PROFILE=restaurant` en `.env`.
+## Documentación y steering
 
-## Base de Datos Híbrida (por Tenant)
+- `docs/` contiene Markdown plano. No hay Doc Engine JSON en este checkout.
+- Steering vigente en `.kiro/steering/`: `biocore-jev-pre-routing`, `biocore-decisions`, `biocore-glossary`, `biocore-architecture`, `biocore-boundaries`, `biocore-testing-validation`, `lessons-learned`, entre otros.
+- Decisiones de arquitectura y configuración: `docs/DECISIONS-AND-CONFIG.md`.
 
-```
-data/
-├── biocore-shared.db     → Reflexes, embeddings (compartido entre todos)
-└── tenants/
-    ├── buen-sabor.db     → Pedidos, inventario, entregas (aislado)
-    └── clinica-x.db      → Citas, pacientes, facturación (aislado)
-```
+## Pendientes conocidos
 
-## Documentación (fuente de verdad portable)
-
-La carpeta `docs/` usa un **Doc Engine basado en JSON + Web Components**:
-
-- `docs/_engine/data/*.json` — Fuente de verdad (JSONs renderizables)
-- `docs/_engine/` — Engine: CSS, Web Components, renderer
-- `docs/viewer.html` — Shell HTML para visualizar (`npm run docs`)
-- `docs/ai/` — Contexto para otros IDEs (Copilot, Cursor, etc.)
-- `docs/architecture/` — ADRs, roadmap, assessment
-
-Documentos disponibles en el engine:
-
-- `architecture` — Capas, monorepo, archivos clave, patrones
-- `admin-settings-panel` — Panel de configuración admin (hot-reload)
-- `glossary`, `execution-flow`, `llm-decision-flow`, etc.
-
-## Steering disponibles (usar con #)
-
-Para contexto detallado, invoca manualmente:
-
-- `biocore-architecture` — Capas, archivos clave, patrones
-- `biocore-glossary` — Definiciones de cada componente
-- `biocore-execution-flow` — Flujo paso a paso de un estímulo
-- `biocore-llm-decision-flow` — Cómo el LLM decide qué tipo usar
-- `biocore-what-llm-receives` — Qué schema se envía al LLM
-- `biocore-tools-comparison` — Comparación SIN vs CON BioCore
-- `biocore-stimulus-sources` — Fuentes posibles de estímulo
-- `biocore-mutation-lifecycle` — Ciclo de vida de una mutación
-- `biocore-decisions` — Decisiones arquitectónicas
-- `lessons-learned` — Errores comunes y cómo evitarlos
-
-## Skills disponibles
-
-Procedimientos paso a paso para tareas comunes:
-
-- `create-molecule` — Crear una nueva molécula completa
-- `create-cell-type` — Agregar un tipo de célula al registry
-- `create-cortex` — Integrar un nuevo proveedor de LLM
+- Herramientas de dominio fuera del catálogo de Jev.
+- Ruta de streaming (`/api/chat/stream`) sin gate de cadenas.
+- API key de Gemini inválida.
+- Polling duplicado en el dashboard (`useApi` con intervalos fijos por componente).
+- Lista fija de perfiles en `platform_tenants`.
+- Limpieza de código sin uso (ver `packages/core/knip.json`).

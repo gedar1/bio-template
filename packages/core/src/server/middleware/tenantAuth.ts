@@ -1,3 +1,4 @@
+import { getDefaultProfile } from "../../config/profileRegistry.js";
 import jwt from "jsonwebtoken";
 import { createLogger } from "../../config/logger.js";
 import { validatePlatformToken } from "./platformAuth.js";
@@ -24,7 +25,7 @@ export interface TenantContext {
 const API_SECRET = process.env.API_SECRET || "";
 
 /** Default tenant profile when using API_SECRET auth */
-const DEFAULT_PROFILE = process.env.TENANT_PROFILE || "dev";
+const DEFAULT_PROFILE = process.env.TENANT_PROFILE || getDefaultProfile();
 
 // ─── Main Function ──────────────────────────────────────────────────────────
 

@@ -1,11 +1,16 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Play, Pause, Trash2 } from "lucide-react";
 import type { LogEntry, LogLevel } from "../../types/dashboard";
 import { filterLogEntries } from "../../utils/filterLogEntries";
-import { withApiKeyParam } from "../../hooks/useApi";
+import { subscribeLogStatus, subscribeLogStream } from "../../hooks/logStream";
 import type { LogFilterState, LogsPanelProps } from "../../types";
 
 const MAX_ENTRIES = 500;
+
+/** Clave estable para detectar entradas repetidas al reconectar. */
+function entryKey(entry: LogEntry): string {
+  return `${entry.timestamp}|${entry.component}|${entry.message}`;
+}
 const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 
 /**
@@ -25,92 +30,52 @@ export const LogsPanel: React.FC<LogsPanelProps> = () => {
   const [paused, setPaused] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const eventSourceRef = useRef<EventSource | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
 
-  // Connect to SSE stream
-  const connect = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
+  // Estado de la conexión compartida (una sola EventSource para toda la app).
+  useEffect(() => {
+    return subscribeLogStatus((status) => {
+      setConnected(status.connected);
+      setError(status.error);
+    });
+  }, []);
 
-    const es = new EventSource(withApiKeyParam("/api/logs/stream"));
-    eventSourceRef.current = es;
-
-    es.onopen = () => {
-      setConnected(true);
-      setError(null);
-    };
-
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-
+  // Entradas del stream. El historial reciente llega al suscribirse y los
+  // duplicados se descartan por entryKey.
+  useEffect(() => {
+    if (paused) return;
+    return subscribeLogStream(
+      (data) => {
         if (data.type === "initial" && Array.isArray(data.entries)) {
-          // Batch of recent entries on first connect
           setEntries((prev) => {
-            const updated = [...prev, ...data.entries];
-            if (updated.length > MAX_ENTRIES) {
-              return updated.slice(updated.length - MAX_ENTRIES);
-            }
-            return updated;
+            const known = new Set(prev.map(entryKey));
+            const fresh = (data.entries as LogEntry[]).filter(
+              (e) => !known.has(entryKey(e)),
+            );
+            const updated = [...prev, ...fresh];
+            return updated.length > MAX_ENTRIES
+              ? updated.slice(updated.length - MAX_ENTRIES)
+              : updated;
           });
         } else if (data.type === "entry" && data.entry) {
-          // Single new entry
           setEntries((prev) => {
-            const updated = [...prev, data.entry as LogEntry];
-            if (updated.length > MAX_ENTRIES) {
-              return updated.slice(updated.length - MAX_ENTRIES);
-            }
-            return updated;
+            const entry = data.entry as LogEntry;
+            if (prev.some((e) => entryKey(e) === entryKey(entry))) return prev;
+            const updated = [...prev, entry];
+            return updated.length > MAX_ENTRIES
+              ? updated.slice(updated.length - MAX_ENTRIES)
+              : updated;
           });
         }
-      } catch {
-        // Ignore malformed messages
-      }
-    };
-
-    es.onerror = () => {
-      setConnected(false);
-      setError("Conexión perdida. Reconectando...");
-      es.close();
-      // Auto-reconnect with delay
-      setTimeout(() => {
-        if (!paused) {
-          connect();
-        }
-      }, 3000);
-    };
+      },
+      { replay: true },
+    );
   }, [paused]);
-
-  // Manage SSE connection lifecycle (Req 6.7 — pause when not visible)
-  useEffect(() => {
-    if (paused) {
-      eventSourceRef.current?.close();
-      eventSourceRef.current = null;
-      setConnected(false);
-      return;
-    }
-
-    connect();
-
-    return () => {
-      eventSourceRef.current?.close();
-      eventSourceRef.current = null;
-    };
-  }, [paused, connect]);
 
   // Pause stream on visibility change (Req 6.7)
   useEffect(() => {
-    const handleVisibility = () => {
-      if (document.hidden) {
-        setPaused(true);
-      } else {
-        setPaused(false);
-      }
-    };
-
+    const handleVisibility = () => setPaused(document.hidden);
     document.addEventListener("visibilitychange", handleVisibility);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibility);

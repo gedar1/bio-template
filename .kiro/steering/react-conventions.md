@@ -5,8 +5,6 @@ fileMatchPattern: "**/packages/dashboard/src/**"
 
 # Convenciones React — Dashboard BioCore
 
-Fuente de verdad: #[[file:docs/ai/specs/REACT.md]]
-
 ## Stack del dashboard
 
 - React + TypeScript + Vite

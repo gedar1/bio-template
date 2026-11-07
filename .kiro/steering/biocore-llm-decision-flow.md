@@ -2,318 +2,56 @@
 inclusion: manual
 ---
 
-# 🧠 Cómo el LLM Sabe Que Debe Usar "sensory"
+# Cómo decide el LLM qué herramienta usar
 
-## La Pregunta Clave
+## Respuesta corta
 
-**¿Cómo sabe el LLM que el estímulo es 'sensory' y no 'memory' o 'communication'?**
+El LLM no lee `registry.json` ni tiene un catálogo fijo. En cada petición recibe una lista de definiciones de herramientas. Una de ellas es `stimulate_differentiation`, cuya descripción y enum salen del registro de células. El LLM elige por lectura de esas descripciones, igual que con cualquier herramienta.
 
-Respuesta: **El LLM no "sabe" de antemano. Lo aprende del schema de la herramienta que le enviamos.**
+## De dónde sale `stimulate_differentiation`
 
----
+`CellServer.setupBaseTools()` (`packages/core/src/cells/CellServer.ts`) construye la herramienta al arrancar cada célula:
 
-## 📋 Paso 1: Construcción del Schema en CellServer
+1. Toma `registry.cells`. Ese registro ya incluye las células de dominio, porque `loadApplicationRegistry()` fusiona `registry.json` con `domain-registry.json`.
+2. Filtra cada tipo con tres condiciones: está en `allowedCells` del perfil del tenant, no es `undifferentiated` y tiene registro integrado o de dominio (`this.registrations.has`).
+3. Con los tipos que pasan el filtro, arma el enum de `type` y una descripción con el formato `'tipo': descripción | ...`.
+4. Si ningún tipo pasa el filtro, el enum queda en `["undifferentiated"]`.
 
-Cuando el sistema arranca, `CellServer` construye la herramienta `stimulate_differentiation` con un schema muy específico:
+Un tipo declarado en `registry.json` sin handler no aparece en la herramienta. Hoy eso aplica a `sensory_advanced` y `monitor`: están en el registro con `parent: "sensory"`, pero no tienen registro integrado.
 
-```typescript
-// En CellServer.ts línea 82-128
+## Qué herramientas ve el LLM en cada vuelta
 
-private setupBaseTools() {
-  this.server.registerTool(
-    "stimulate_differentiation",
-    {
-      // ⭐ AQUÍ ES LA MAGIA: La descripción lista TODOS los tipos disponibles
-      description: `Muta la célula a un perfil especializado con nuevas herramientas.
-                    Tipos disponibles: 'sensory': Para leer datos externos: web scraping, APIs REST, feeds RSS. |
-                                       'sensory_advanced': Scraping avanzado con paginación, extracción de texto y análisis profundo. |
-                                       'memory': Para persistir y consultar información: bases de datos, archivos JSON, caché. |
-                                       'filesystem': Operaciones de archivos: leer, escribir, copiar, mover, listar directorios. |
-                                       'communication': Envío de emails, WhatsApp y comunicación externa. |
-                                       'versioncontrol': Operaciones Git: commit, push, pull, branches, log. |
-                                       'http': Peticiones HTTP avanzadas: GET, POST, PUT, DELETE, upload, download. |
-                                       'system': Capacidad Híbrida: Ejecuta herramientas de sistema mediante CLIs. |
-                                       'monitor': Monitoreo inteligente: combina scraping, HTTP y sistema para vigilar servicios. |
-                                       'undifferentiated': Estado inicial sin capacidades específicas.`,
+`UnifiedCortex` llama a `refreshTools()` antes de cada petición y después de cada ejecución de herramientas. Esa llamada consulta a cada organismo con `inspectTools()` (que pide `listTools` a la célula) y deduplica por nombre. La lista contiene:
 
-      // ⭐ El schema define qué valores son válidos
-      inputSchema: {
-        type: z.enum(validTypes).describe(typeDescriptions),
-        // validTypes = ["sensory", "sensory_advanced", "memory", "filesystem", ...]
-      },
-    },
-    async ({ type }) => {
-      // Ejecuta la mutación
-    },
-  );
-}
-```
+- `stimulate_differentiation`, siempre.
+- Las herramientas del tipo activo. Antes de la primera mutación, la célula no tiene ninguna.
 
----
+`tools.json` y `registry.json` no llegan al LLM. `tools.json` solo alimenta el catálogo de Jev (ver [[biocore-jev-pre-routing]]).
 
-## 🔄 Paso 2: El LLM Recibe la Herramienta
+## Niveles de decisión antes del LLM
 
-Cuando `UnifiedCortex` llama a `getUnifiedTools()`, obtiene:
+El LLM es el último nivel. Antes de llamarlo, `runConversation` y `preRoute` pueden resolver el mensaje con código o con Jev:
 
-```typescript
-// En UnifiedCortex.ts línea 56-59
+1. **Gate de cadenas** (`runConversation`): si Jev detecta `scrape_url→db_insert` con similitud ≥ 0.7, la cadena se ejecuta sin LLM.
+2. **Pre-router** (`preRoute`): Jev elige un tipo de célula y la muta antes de llamar al LLM. Se omite si ese tipo ya se mutó en el mensaje actual.
+3. **Pista** (`hint`): Jev sugiere una secuencia. Se agrega al historial como mensaje de sistema (`[Jev] Secuencia sugerida: ...`). El LLM la lee, pero no está obligado a seguirla.
+4. **LLM**: recibe el historial y las herramientas. Si elige `stimulate_differentiation`, `executeAction` muta la célula y devuelve "Sistema mutado exitosamente. Nuevas herramientas disponibles.". Si el tipo ya se mutó en el mensaje, devuelve que las herramientas de ese tipo ya están disponibles.
 
-private async getGeminiTools() {
-  const unified = await this.getUnifiedTools();
-  return formatToolsForGemini(unified);
-}
-```
+Después de una mutación, el bucle vuelve a llamar a `refreshTools()` y la siguiente vuelta usa la lista nueva.
 
-Que retorna algo como:
+## Cómo elige el LLM
 
-```json
-[
-  {
-    "name": "stimulate_differentiation",
-    "description": "Muta la célula a un perfil especializado con nuevas herramientas. Tipos disponibles: 'sensory': Para leer datos externos: web scraping, APIs REST, feeds RSS. | 'memory': Para persistir y consultar información: bases de datos, archivos JSON, caché. | ...",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "enum": [
-            "sensory",
-            "sensory_advanced",
-            "memory",
-            "filesystem",
-            "communication",
-            "versioncontrol",
-            "http",
-            "system",
-            "monitor",
-            "undifferentiated"
-          ],
-          "description": "'sensory': Para leer datos externos... | 'memory': Para persistir... | ..."
-        }
-      },
-      "required": ["type"]
-    }
-  }
-]
-```
+Relaciona la intención del usuario con el texto de `description` y con los valores del enum. La calidad de la elección depende de la descripción en `registry.json` o en `domain-registry.json`. Cambiar esa descripción cambia la decisión sin tocar código. Ese cambio solo tiene efecto en los tipos que tienen handler registrado.
 
----
+## Límites
 
-## 🧠 Paso 3: El LLM Analiza y Decide
-
-Ahora el LLM recibe:
-
-```
-USUARIO: "Scrapea https://example.com y guarda el título en la DB"
-
-HERRAMIENTAS DISPONIBLES:
-{
-  "name": "stimulate_differentiation",
-  "description": "Muta la célula a un perfil especializado con nuevas herramientas.
-                  Tipos disponibles:
-                  - 'sensory': Para leer datos externos: web scraping, APIs REST, feeds RSS.
-                  - 'memory': Para persistir y consultar información: bases de datos, archivos JSON, caché.
-                  - 'communication': Envío de emails, WhatsApp y comunicación externa.
-                  - ..."
-  "inputSchema": {
-    "properties": {
-      "type": {
-        "enum": ["sensory", "sensory_advanced", "memory", "filesystem", "communication", ...]
-      }
-    }
-  }
-}
-```
-
-El LLM **razona así:**
-
-```
-1. Usuario dice: "Scrapea https://example.com"
-   → Necesito web scraping
-
-2. Veo la descripción de stimulate_differentiation
-   → Dice: "'sensory': Para leer datos externos: web scraping, APIs REST, feeds RSS"
-
-3. ¡Perfecto! "sensory" es para web scraping
-
-4. Veo el enum: ["sensory", "sensory_advanced", "memory", ...]
-   → "sensory" es un valor válido
-
-5. Decido: Voy a llamar stimulate_differentiation con type="sensory"
-```
-
----
-
-## 📊 Flujo Visual Completo
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 1: CONSTRUCCIÓN DEL SCHEMA (CellServer)                │
-└─────────────────────────────────────────────────────────────┘
-
-registry.json:
-{
-  "cells": [
-    {
-      "type": "sensory",
-      "description": "Para leer datos externos: web scraping, APIs REST, feeds RSS.",
-      "tools": ["scrape_url", "scrape_metadata", ...]
-    },
-    {
-      "type": "memory",
-      "description": "Para persistir y consultar información: bases de datos, archivos JSON, caché.",
-      "tools": ["db_query", "db_insert", ...]
-    },
-    ...
-  ]
-}
-       ↓
-CellServer.setupBaseTools():
-  - Lee registry.json
-  - Extrae: validTypes = ["sensory", "memory", "filesystem", ...]
-  - Extrae: typeDescriptions = "'sensory': Para leer datos externos... | 'memory': Para persistir... | ..."
-  - Crea schema con enum y descriptions
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 2: ENVÍO AL LLM (UnifiedCortex)                        │
-└─────────────────────────────────────────────────────────────┘
-
-getUnifiedTools() → [
-  {
-    name: "stimulate_differentiation",
-    description: "Muta la célula... Tipos: 'sensory': web scraping | 'memory': BD | ...",
-    inputSchema: {
-      properties: {
-        type: {
-          enum: ["sensory", "memory", "filesystem", ...],
-          description: "'sensory': web scraping | 'memory': BD | ..."
-        }
-      }
-    }
-  }
-]
-       ↓
-formatToolsForGemini(tools) → JSON con schema completo
-       ↓
-genAI.getGenerativeModel({ tools: [...] })
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 3: LLM RECIBE Y ANALIZA                                │
-└─────────────────────────────────────────────────────────────┘
-
-Gemini recibe:
-  - Mensaje: "Scrapea https://example.com y guarda en DB"
-  - Herramientas: [stimulate_differentiation con schema]
-
-Gemini razona:
-  1. "Necesito web scraping"
-  2. Veo enum: ["sensory", "memory", "filesystem", ...]
-  3. Veo description: "'sensory': Para leer datos externos: web scraping, APIs REST"
-  4. ¡Perfecto! "sensory" es para web scraping
-  5. Decido: stimulate_differentiation({ type: "sensory" })
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASO 4: EJECUCIÓN                                           │
-└─────────────────────────────────────────────────────────────┘
-
-orchestrator.executeAction("stimulate_differentiation", { type: "sensory" })
-  ↓
-routeStimulus("sensory")
-  ↓
-Todos los organismos reciben: stimulate("sensory")
-  ↓
-CellServer.stimulate_differentiation("sensory")
-  ↓
-Célula muta: instancia ScraperMolecule, HTTPMolecule
-  ↓
-Registra herramientas: [scrape_url, extract_links, scrape_metadata, ...]
-```
-
----
-
-## 🎯 La Clave: El Schema Es el Maestro
-
-El LLM **no tiene inteligencia mágica**. Simplemente:
-
-1. **Lee el enum** en el schema: `["sensory", "memory", "filesystem", ...]`
-2. **Lee las descripciones** en el schema: `"'sensory': Para leer datos externos: web scraping..."`
-3. **Aplica lógica de lenguaje natural** para mapear la solicitud del usuario a la opción correcta
-
-```
-Usuario dice: "Scrapea"
-Schema dice: "'sensory': web scraping"
-LLM conecta: scraping → sensory ✓
-```
-
-```
-Usuario dice: "Guarda en BD"
-Schema dice: "'memory': bases de datos"
-LLM conecta: BD → memory ✓
-```
-
----
-
-## 💡 Ejemplo: Cómo Cambiar el Comportamiento
-
-Si quisieras que el LLM elija diferente, solo cambias el registry.json:
-
-**Antes:**
-
-```json
-{
-  "type": "sensory",
-  "description": "Para leer datos externos: web scraping, APIs REST, feeds RSS."
-}
-```
-
-**Después:**
-
-```json
-{
-  "type": "sensory",
-  "description": "Para leer datos externos: web scraping, APIs REST, feeds RSS, SCRAPING DE REDES SOCIALES, EXTRACCIÓN DE DATOS MASIVOS."
-}
-```
-
-Ahora el LLM verá "SCRAPING DE REDES SOCIALES" en la descripción y lo considerará para esa tarea.
-
----
-
-## 🔍 Resumen: Los 3 Componentes del Schema
-
-```typescript
-// 1. ENUM: Valores válidos
-"enum": ["sensory", "memory", "filesystem", ...]
-
-// 2. DESCRIPTION: Explicación para el LLM
-"description": "'sensory': Para leer datos externos: web scraping, APIs REST, feeds RSS. | 'memory': Para persistir y consultar información: bases de datos, archivos JSON, caché. | ..."
-
-// 3. TYPE: Tipo de dato
-"type": "string"
-```
-
-El LLM usa estos 3 componentes para:
-
-- **Validar** que solo puede elegir valores del enum
-- **Entender** qué hace cada valor (description)
-- **Razonar** cuál es el más apropiado para la tarea
-
----
-
-## 🚀 Flujo Resumido en 1 Línea
-
-```
-registry.json → CellServer.setupBaseTools() → schema con enum+descriptions →
-LLM recibe schema → LLM mapea usuario a enum → LLM elige "sensory"
-```
-
-**El LLM "sabe" porque le dijimos exactamente qué opciones tiene y qué hace cada una.**
-
----
+- Una célula tiene un tipo activo. Si una tarea necesita dos tipos, el LLM muta dos veces, y cada mutación es una vuelta del bucle con su propia llamada al proveedor.
+- `_mutatedTypes` impide repetir la misma mutación dentro de un mensaje. Se limpia en `trackInput()`, al inicio de cada mensaje.
+- Si un proveedor falla antes de ejecutar efectos, el bucle prueba el siguiente de `providerChain()`. Después del primer efecto, no hay cambio de proveedor.
 
 ## Relaciones
 
-- Qué recibe el LLM exactamente: [[biocore-what-llm-receives]]
-- Cómo se ejecuta después de decidir: [[biocore-execution-flow]]
-- Comparación SIN vs CON BioCore: [[biocore-tools-comparison]]
-- Glosario (Registry, Célula, Átomo): [[biocore-glossary]]
+- Qué se envía exactamente al LLM: [[biocore-what-llm-receives]]
+- Ciclo de vida de la mutación: [[biocore-mutation-lifecycle]]
+- Ejecución completa: [[biocore-execution-flow]]
+- Comparación con cargar todas las herramientas: [[biocore-tools-comparison]]

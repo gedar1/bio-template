@@ -308,36 +308,3 @@ export function extractParamsForReflex(
 
   return result;
 }
-
-// ─── Extractor genérico para InterpolationEngine ──────────────────────────────
-
-/**
- * Extrae todos los parámetros detectables del texto del usuario.
- * Retorna un mapa de tipo → valor para uso por el InterpolationEngine.
- *
- * @param text - Texto del usuario
- * @returns Mapa { url: "https://...", email: "user@...", table: "users", ... }
- */
-export function extractParamsFromText(text: string): Record<string, string> {
-  const params: Record<string, string> = {};
-
-  const url = extractUrl(text);
-  if (url) params.url = url;
-
-  const email = extractEmail(text);
-  if (email) params.email = email;
-
-  const table = extractTableName(text);
-  if (table) params.table = table;
-
-  const path = extractFilePath(text);
-  if (path) params.path = path;
-
-  const query = extractQuery(text);
-  if (query) params.query = query;
-
-  const branch = extractBranch(text);
-  if (branch && branch !== "main") params.branch = branch; // only if explicitly mentioned
-
-  return params;
-}

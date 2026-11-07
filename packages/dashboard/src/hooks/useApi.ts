@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useReducer, useRef } from "react";
 
 const BASE = "";
+const MAX_BACKOFF_MS = 60_000;
 
 /**
  * Obtiene el API key del localStorage (configurado por el admin en la UI).
@@ -34,36 +35,229 @@ function withApiKeyParam(url: string): string {
 
 export { getApiKey, authHeaders, withApiKeyParam };
 
-export function useApi<T>(endpoint: string, intervalMs?: number) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+// ─── Caché compartida por clave ─────────────────────────────────────────────
+// Cada clave (una URL con tenantId en la query, o un prefijo como "platform:")
+// tiene una sola entrada. Los componentes que piden la misma clave comparten datos,
+// una petición en vuelo y un temporizador. El intervalo efectivo es el menor de los
+// suscriptores activos.
 
-  const fetchData = useCallback(async () => {
+type Listener = () => void;
+type Fetcher = () => Promise<unknown>;
+
+interface CacheEntry {
+  data: unknown;
+  error: string | null;
+  loading: boolean;
+  failures: number;
+  fetcher: Fetcher | null;
+  listeners: Set<Listener>;
+  intervals: Map<symbol, number>;
+  timer: ReturnType<typeof setTimeout> | null;
+  inFlight: Promise<void> | null;
+}
+
+const cache = new Map<string, CacheEntry>();
+
+/** Sube al limpiar la caché: las respuestas en vuelo de una generación anterior se descartan. */
+let generation = 0;
+
+function getEntry(key: string): CacheEntry {
+  let entry = cache.get(key);
+  if (!entry) {
+    entry = {
+      data: null,
+      error: null,
+      loading: true,
+      failures: 0,
+      fetcher: null,
+      listeners: new Set(),
+      intervals: new Map(),
+      timer: null,
+      inFlight: null,
+    };
+    cache.set(key, entry);
+  }
+  return entry;
+}
+
+function notify(entry: CacheEntry): void {
+  for (const listener of entry.listeners) listener();
+}
+
+function isVisible(): boolean {
+  return typeof document === "undefined" || !document.hidden;
+}
+
+/** Reprograma el siguiente refresco con el menor intervalo y backoff por errores. */
+function scheduleNext(key: string, entry: CacheEntry): void {
+  if (entry.timer) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+  if (entry.intervals.size === 0) return;
+
+  const base = Math.min(...entry.intervals.values());
+  const cap = Math.max(base, MAX_BACKOFF_MS);
+  const delay = Math.min(base * 2 ** entry.failures, cap);
+
+  entry.timer = setTimeout(() => {
+    entry.timer = null;
+    // Con la pestaña oculta no se pide nada: al volver a verla se refresca (ver onVisible).
+    if (isVisible()) void loadEntry(key);
+  }, delay);
+}
+
+/** Ejecuta el fetcher de la entrada y actualiza sus datos. Reutiliza la petición en vuelo. */
+function loadEntry(key: string): Promise<void> {
+  const entry = getEntry(key);
+  if (entry.inFlight) return entry.inFlight;
+  const fetcher = entry.fetcher;
+  if (!fetcher) return Promise.resolve();
+
+  const gen = generation;
+  entry.inFlight = (async () => {
+    let ok = false;
+    let data: unknown = null;
+    let error: string | null = null;
     try {
-      const res = await fetch(`${BASE}${endpoint}`, {
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      setData(json);
-      setError(null);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+      data = await fetcher();
+      ok = true;
+    } catch (err: unknown) {
+      error = err instanceof Error ? err.message : String(err);
     }
-  }, [endpoint]);
+
+    // La caché se limpió mientras esta petición estaba en vuelo: no se escribe nada.
+    if (gen !== generation) return;
+
+    entry.inFlight = null;
+    entry.loading = false;
+    if (ok) {
+      entry.data = data;
+      entry.error = null;
+      entry.failures = 0;
+    } else {
+      entry.error = error;
+      entry.failures += 1;
+    }
+    notify(entry);
+    scheduleNext(key, entry);
+  })();
+  return entry.inFlight;
+}
+
+// Al volver a ver la pestaña se refrescan las entradas que tienen suscriptores con intervalo.
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    for (const [key, entry] of cache) {
+      if (entry.intervals.size > 0) void loadEntry(key);
+    }
+  });
+}
+
+/**
+ * Vacía la caché. Llamar al cerrar sesión para que un cliente no vea datos de otro.
+ * Las entradas sin suscriptores se eliminan; las que tienen suscriptores se reinician.
+ */
+export function clearApiCache(): void {
+  generation += 1;
+  for (const [key, entry] of cache) {
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = null;
+    entry.inFlight = null;
+    if (entry.listeners.size === 0) {
+      cache.delete(key);
+      continue;
+    }
+    entry.data = null;
+    entry.error = null;
+    entry.failures = 0;
+    entry.loading = true;
+    notify(entry);
+  }
+}
+
+/**
+ * Refresca las claves que empiezan con alguno de los prefijos. Úsalo después de una
+ * acción que cambia esos datos (por ejemplo, un mensaje del chat puede mutar la célula).
+ */
+export function refreshApi(...prefixes: string[]): void {
+  for (const [key, entry] of cache) {
+    if (entry.listeners.size === 0) continue;
+    if (prefixes.some((p) => key.startsWith(p))) void loadEntry(key);
+  }
+}
+
+/**
+ * Lee un recurso con caché compartida.
+ *
+ * - `key` null desactiva la consulta; la última respuesta se conserva.
+ * - `fetcher` obtiene el dato. Debe ser equivalente para una misma clave.
+ * - `intervalMs` refresca la clave en ese intervalo. Si varios componentes piden la
+ *   misma clave, se usa el intervalo más corto y solo hay un temporizador.
+ * - Sin intervalo, la clave se pide al montar el componente y no se refresca sola.
+ */
+export function useCachedResource<T>(
+  key: string | null,
+  fetcher: (() => Promise<T>) | null,
+  intervalMs?: number,
+) {
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const [subscriber] = useState(() => Symbol("cached"));
+  const fetcherRef = useRef(fetcher);
+  fetcherRef.current = fetcher;
 
   useEffect(() => {
-    void fetchData();
-    if (intervalMs) {
-      const id = setInterval(fetchData, intervalMs);
-      return () => clearInterval(id);
-    }
-  }, [fetchData, intervalMs]);
+    if (!key) return;
+    const entry = getEntry(key);
+    entry.fetcher = () =>
+      fetcherRef.current ? fetcherRef.current() : Promise.resolve(null);
+    const listener: Listener = () => rerender();
+    entry.listeners.add(listener);
+    if (intervalMs) entry.intervals.set(subscriber, intervalMs);
 
-  return { data, error, loading, refetch: fetchData };
+    // Se pide al montar. Si ya hay una petición en vuelo, se reutiliza.
+    void loadEntry(key);
+    scheduleNext(key, entry);
+
+    return () => {
+      entry.listeners.delete(listener);
+      entry.intervals.delete(subscriber);
+      scheduleNext(key, entry);
+    };
+  }, [key, intervalMs, subscriber]);
+
+  const entry = key ? getEntry(key) : null;
+  const refetch = useCallback(
+    () => (key ? loadEntry(key) : Promise.resolve()),
+    [key],
+  );
+
+  return {
+    data: (entry?.data ?? null) as T | null,
+    error: entry?.error ?? null,
+    loading: entry?.loading ?? false,
+    refetch,
+  };
+}
+
+/** GET a un endpoint del backend con la autenticación de tenant. */
+async function apiGet<T>(endpoint: string): Promise<T> {
+  const res = await fetch(`${BASE}${endpoint}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()) as T;
+}
+
+/**
+ * Lee un endpoint del backend con caché compartida. La clave es el endpoint, así que
+ * la query (por ejemplo `tenantId`) forma parte de la clave.
+ */
+export function useApi<T>(endpoint: string | null, intervalMs?: number) {
+  return useCachedResource<T>(
+    endpoint,
+    endpoint ? () => apiGet<T>(endpoint) : null,
+    intervalMs,
+  );
 }
 
 /**
