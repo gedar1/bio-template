@@ -63,6 +63,20 @@ export function checkAuth(
     return null;
   }
 
+  // Login y logout del tenant: el login no tiene credenciales todavía, y el
+  // logout solo borra la cookie de sesión.
+  // Login y logout públicos. El login de plataforma valida PLATFORM_SECRET en el
+  // propio endpoint, igual que el login de tenant valida su API key.
+  const pathOnly = url.split("?")[0];
+  if (
+    req.method === "POST" &&
+    (pathOnly === "/api/tenant/auth/login" ||
+      pathOnly === "/api/tenant/auth/logout" ||
+      pathOnly === "/api/platform/auth/login")
+  ) {
+    return null;
+  }
+
   // Archivos estáticos del dashboard — no requieren auth
   if (!url.startsWith("/api/") && !url.startsWith("/health")) {
     return null;

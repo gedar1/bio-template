@@ -20,9 +20,10 @@ Modelo de TypeSafe que devuelve decisiones tipadas. BioCore lo usa para elegir c
 
 ## Gate de cadenas
 
-Paso de `UnifiedCortex.runConversation` que ejecuta `scrape_url→db_insert` sin LLM cuando Jev la detecta con similitud ≥ `CHAIN_MIN_SIMILARITY` (0.7, en `atoms/chainExtraction.ts`). Si falta la URL, guarda un pendiente con vencimiento de 24 horas (`DefaultPendingChainStore`). El siguiente mensaje de la misma sesión completa la cadena. El pendiente vive en memoria y se pierde al reiniciar el proceso.
+Paso de `UnifiedCortex.runConversation` que ejecuta sin LLM una cadena declarada en el perfil (`domain-profile.ts`, campo `chains`) cuando Jev sugiere su secuencia con similitud ≥ `CHAIN_MIN_SIMILARITY` (0.7, en `atoms/chainExtraction.ts`). Si la cadena pide un dato y el mensaje no lo trae, guarda un pendiente con vencimiento de 24 horas (`DefaultPendingChainStore`). El siguiente mensaje de la misma sesión intenta completar la cadena. El pendiente vive en memoria y se pierde al reiniciar el proceso.
 
-- **Solo en `chat()`.** La ruta de streaming (`chatStream`) no ejecuta el gate.
+- **Aplica en `chat()` y `chatStream()`.** Ambas rutas llaman a `runConversation`.
+- **Declaración:** cada perfil define sus cadenas. Un perfil sin cadenas no activa el gate.
 - **Relacionado:** [[biocore-execution-flow]]
 
 ## Pre-router
@@ -84,7 +85,7 @@ Función pura sin estado ni efectos. No importa moléculas, células, organismos
 - **Directorio:** `atoms/*.ts`
 - **Funciones de esquema y herramientas:** `cleanSchemaForLLM()`, `deduplicateTools()` (`schema.ts`); `formatToolsForAnthropic()`, `formatToolsForGemini()`, `formatToolsForOpenAI()` (`toolFormat.ts`)
 - **Funciones de registro:** `resolveTools()`, `resolveAllTools()` (`registry.ts`)
-- **Funciones de Jev:** `jevEvaluateAll()` (`reflexSelector.ts`); `preCellRoute()` (`cellRouter.ts`); `extractUrl()`, `isScrapeStoreSequence()` (`chainExtraction.ts`)
+- **Funciones de Jev:** `jevEvaluateAll()` (`reflexSelector.ts`); `preCellRoute()` (`cellRouter.ts`); `extractUrl()` (`chainExtraction.ts`); `chainSequence()`, `sequenceKey()`, `resolveArgs()` (`chainSpec.ts`)
 - **Exportado sin uso en el chat:** `chooseModel()` (`modelSelection.ts`). El proveedor se elige por configuración, no por esta función.
 - **Relacionado:** [[biocore-what-llm-receives]]
 
@@ -120,13 +121,6 @@ Archivo JSON que define los tipos de célula: `type`, `description`, `parent` op
 - **Modo:** solo HINT. Los modos de ejecución directa y los umbrales adaptativos se retiraron. Ver [[biocore-decisions]].
 - **Relacionado:** [[biocore-architecture]], [[biocore-execution-flow]]
 
-## Extracción de parámetros (`paramExtractor`)
-
-Extrae URL, email, tabla, ruta, consulta y rama del texto. Solo lo usa `HeadlessOrchestrator` a través de `extractParamsForReflex`. La interpolación de plantillas de argumentos se retiró.
-
-- **Archivo:** `atoms/paramExtractor.ts`
-- **Relacionado:** [[biocore-architecture]]
-
 ## MCP External Server
 
 Servidor que expone BioCore a IDEs como herramientas MCP. Cada herramienta llama a `tenantManager.chat`, así que pasa por el cortex.
@@ -141,7 +135,7 @@ Servidor que expone BioCore a IDEs como herramientas MCP. Cada herramienta llama
 Configuración que decide qué células puede ver un tenant y qué agente de dominio usa.
 
 - **Archivos:** `config/domain-profile.ts` (el perfil del dominio) y `config/profileRegistry.ts` (esquema del perfil)
-- **Campos:** `allowedCells` (mínimo un tipo), `agentFile` (ruta del `.md`), `description` opcional
+- **Campos:** `allowedCells` (mínimo un tipo), `agentFile` (ruta del `.md`), `description` opcional, `chains` opcional (cadenas que el gate puede ejecutar sin LLM)
 - **Relacionado:** [[biocore-architecture]]
 
 ## Agente de dominio

@@ -7,6 +7,10 @@ import {
 import type { LoginRateLimiter } from "../middleware/loginRateLimiter.js";
 import type { AuditLogger } from "../services/AuditLogger.js";
 import { successEnvelope, errorEnvelope } from "../utils/apiEnvelope.js";
+import {
+  buildClearTenantSessionCookie,
+  buildTenantSessionCookie,
+} from "../middleware/sessionCookie.js";
 
 const log = createLogger("TenantAuthRoutes");
 
@@ -18,6 +22,8 @@ const log = createLogger("TenantAuthRoutes");
 export interface PlatformResponse {
   _statusCode: number;
   body: unknown;
+  /** Valor de la cabecera Set-Cookie, si la respuesta cambia la sesión. */
+  _setCookie?: string;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -134,16 +140,26 @@ export function setupTenantAuthRoutes(
       "Tenant auth login successful",
     );
 
-    return platformResponse(
-      200,
-      successEnvelope({
-        token: result.token,
-        tenant_id: result.tenant_id,
-        profile: result.profile,
-        expires_in: result.expires_in,
-      }),
-    );
+    return {
+      ...platformResponse(
+        200,
+        successEnvelope({
+          token: result.token,
+          tenant_id: result.tenant_id,
+          profile: result.profile,
+          expires_in: result.expires_in,
+        }),
+      ),
+      _setCookie: buildTenantSessionCookie(result.token, result.expires_in),
+    };
   });
+
+  // ─── POST /api/tenant/auth/logout ─────────────────────────────────────────
+  // Borra la cookie de sesión del navegador. No invalida el JWT en el servidor.
+  health.registerData("tenant/auth/logout", async () => ({
+    ...platformResponse(200, successEnvelope({ logged_out: true })),
+    _setCookie: buildClearTenantSessionCookie(),
+  }));
 
   // ─── GET /api/tenant/auth/me ──────────────────────────────────────────────
   // Protected endpoint: returns current tenant context from JWT

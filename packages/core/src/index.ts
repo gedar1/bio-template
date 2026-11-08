@@ -47,13 +47,6 @@ export * from "./organisms/interfaces/IOrganism.js";
 // ─── System ───────────────────────────────────────────────────
 export { BaseOrchestrator } from "./system/BaseOrchestrator.js";
 export type { OrchestratorOptions } from "./system/BaseOrchestrator.js";
-export { HeadlessOrchestrator } from "./system/NervousSystem.js";
-export type {
-  HeadlessTask,
-  HeadlessStep,
-  HeadlessResult,
-  HeadlessOrchestratorOptions,
-} from "./system/NervousSystem.js";
 export * from "./system/interfaces/IOrchestrator.js";
 export * from "./system/interfaces/IStimulus.js";
 

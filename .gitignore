@@ -31,3 +31,6 @@ Thumbs.db
 # IDE
 .vscode/settings.json
 .idea/
+
+# Grafo de conocimiento generado por graphify
+graphify-out/

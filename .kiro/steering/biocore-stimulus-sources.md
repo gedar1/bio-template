@@ -10,13 +10,13 @@ Un estímulo es una orden de mutación que llega a `routeStimulus`. El método a
 
 ## Quién llama a `routeStimulus` hoy
 
-| `source`         | Dónde                                                                     | Estímulo                                  | Notas                                         |
-| ---------------- | ------------------------------------------------------------------------- | ----------------------------------------- | --------------------------------------------- |
-| `llm`            | `BaseOrchestrator.executeAction`, al ejecutar `stimulate_differentiation` | Tipo que elige el LLM                     | Bloqueado si el tipo ya se mutó en el mensaje |
-| `jev-chain`      | `UnifiedCortex.runScrapeAndStore`, dos veces (`sensory`, `memory`)        | Tipos de la cadena `scrape_url→db_insert` | Sin LLM                                       |
-| `jev-pre-router` | `UnifiedCortex.preRoute`                                                  | Tipo que elige el pre-router              | Antes del LLM                                 |
+| `source`         | Dónde                                                                     | Estímulo                                               | Notas                                         |
+| ---------------- | ------------------------------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------- |
+| `llm`            | `BaseOrchestrator.executeAction`, al ejecutar `stimulate_differentiation` | Tipo que elige el LLM                                  | Bloqueado si el tipo ya se mutó en el mensaje |
+| `jev-chain`      | `runChainSteps` en `UnifiedCortex`, un estímulo por paso de la cadena     | Tipos de los pasos de la cadena declarada en el perfil | Sin LLM                                       |
+| `jev-pre-router` | `UnifiedCortex.preRoute`                                                  | Tipo que elige el pre-router                           | Antes del LLM                                 |
 
-Ningún otro archivo de `packages/core/src` llama a `routeStimulus`. `HeadlessOrchestrator` tampoco lo llama.
+Ningún otro archivo de `packages/core/src` llama a `routeStimulus`.
 
 ## Entradas externas: pasan por el cortex
 

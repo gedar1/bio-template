@@ -139,6 +139,24 @@ Hay dos tipos de base, y cada dato va en una sola:
 
 ---
 
+### 3.12 Cadenas declaradas en el perfil
+
+**Decisión:** las cadenas que el gate ejecuta sin LLM se declaran en `config/domain-profile.ts`, en el campo `chains`. El motor las ejecuta con `system/chainRunner.ts` y no conoce sus nombres. Se descartaron las funciones dentro del perfil para mantener la configuración declarativa.
+
+**Estado:** compila, pasa los tests y el smoke test del runner. Falta verificarla en el chat después de reiniciar el backend.
+
+### 3.13 Ruta canónica de ruteo: UnifiedCortex
+
+**Decisión:** la ruta canónica es `UnifiedCortex.runConversation`. Se retiraron `HeadlessOrchestrator`, `NervousSystem`, `atoms/paramExtractor.ts` y `HeadlessEscalationError`. Tenían heurísticas propias que duplicaban el cortex y no los usaba el chat ni el servidor.
+
+**Pendiente:** unificar el historial, que hoy tiene tres implementaciones (`HistoryMolecule`, `DefaultHistoryManager` y `LegacyHistoryManagerAdapter`).
+
+### 3.14 Historial de reflexes
+
+**Decisión:** se borraron las tres filas de seed (`id` 1 a 3). Se conservaron las dos filas de uso real del chat (`id` 4 y 5). La copia de seguridad está en `data/backups/biocore-before-reflex-cleanup-2026-11-07T23-32-56-088Z.db`.
+
+**Pendiente:** la columna `schema_versions` se conserva por decisión. Ver sección 6.
+
 ## 4. Configuración
 
 ### 4.1 Variables de entorno del backend (`.env` en la raíz)

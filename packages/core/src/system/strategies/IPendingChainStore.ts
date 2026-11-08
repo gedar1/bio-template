@@ -5,13 +5,13 @@
  */
 
 export interface PendingChainRequest {
-  readonly sequence: string;
+  readonly chainId: string;
   readonly expiresAt: number;
 }
 
 export interface IPendingChainStore {
   /** Guarda una ejecución pendiente para la sesión. */
-  set(sessionId: string, sequence: string): void;
+  set(sessionId: string, chainId: string): void;
   /** Devuelve la pendiente vigente de la sesión, o null si no existe o expiró. */
   get(sessionId: string): PendingChainRequest | null;
   /** Elimina la pendiente de la sesión. */

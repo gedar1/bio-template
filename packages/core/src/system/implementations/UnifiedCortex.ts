@@ -39,16 +39,10 @@ import {
 import type { ILogger } from "../../config/ILogger.js";
 import type { IUsageMetricsSink } from "../interfaces/IUsageMetricsSink.js";
 import type { ITenantTokenLimitReader } from "../interfaces/ITenantTokenLimitReader.js";
-import {
-  CHAIN_MIN_SIMILARITY,
-  CHAIN_TABLE,
-  CREATE_CHAIN_TABLE_SQL,
-  PENDING_DISCARDED_WARNING,
-  SCRAPE_STORE_SEQUENCE,
-  URL_QUESTION,
-  extractUrl,
-  isScrapeStoreSequence,
-} from "../../atoms/chainExtraction.js";
+import { CHAIN_MIN_SIMILARITY, PENDING_DISCARDED_WARNING } from "../../atoms/chainExtraction.js";
+import { EXTRACTORS, chainSequence, sequenceKey } from "../../atoms/chainSpec.js";
+import type { ChainDefinition } from "../../config/chainSchema.js";
+import { runChain, type ChainPort } from "../chainRunner.js";
 import { DefaultPendingChainStore } from "../strategies/DefaultPendingChainStore.js";
 import type { IPendingChainStore } from "../strategies/IPendingChainStore.js";
 
@@ -68,6 +62,7 @@ export interface UnifiedCortexOptions extends OrchestratorOptions {
   readonly tenantLimits?: ITenantTokenLimitReader;
   readonly singleProvider?: boolean;
   readonly pendingChains?: IPendingChainStore;
+  readonly chains?: readonly ChainDefinition[];
 }
 
 interface StreamResult {
@@ -91,11 +86,13 @@ export class UnifiedCortex extends BaseOrchestrator {
   private sessionActive = false;
   private pendingConfig: LLMProviderConfig | null = null;
   private readonly pendingChains: IPendingChainStore;
+  private readonly chains: readonly ChainDefinition[];
 
   constructor(options: UnifiedCortexOptions = {}) {
     super(options);
     this.pendingChains =
       options.pendingChains ?? new DefaultPendingChainStore();
+    this.chains = options.chains ?? [];
     this.tenantId = options.tenantId ?? null;
     this.metrics = options.metrics ?? null;
     this.tenantLimits = options.tenantLimits ?? null;
@@ -242,26 +239,28 @@ export class UnifiedCortex extends BaseOrchestrator {
     const cleanText = userMessage.replace(/^\/(claude|gemini|nvidia)\s*/i, "");
     const sessionId = this.getSessionId();
 
-    // Ejecución pendiente: el mensaje actual responde a la pregunta de la URL.
+    // Ejecución pendiente: el mensaje actual responde al dato que la cadena necesitaba.
     const pending = this.pendingChains.get(sessionId);
     if (pending) {
       this.pendingChains.clear(sessionId);
       this.addUserMessage(cleanText);
-      const url = extractUrl(cleanText);
-      const reply = url
-        ? await this.runScrapeAndStore(url)
-        : PENDING_DISCARDED_WARNING;
+      const chain = this.chains.find((c) => c.id === pending.chainId);
+      const requirement = chain?.requires[0];
+      const value = requirement
+        ? EXTRACTORS[requirement.extractor](cleanText)
+        : null;
+      const reply =
+        chain && requirement && value !== null
+          ? await this.runChainSteps(chain, { [requirement.name]: value })
+          : PENDING_DISCARDED_WARNING;
       return this.replyAssistant(reply, streaming);
     }
 
     this.trackInput(cleanText);
     const match = await this.queryReflex(cleanText);
-    if (
-      match &&
-      isScrapeStoreSequence(match.record.sequence) &&
-      match.similarity >= CHAIN_MIN_SIMILARITY
-    ) {
-      return this.handleScrapeAndStore(cleanText, streaming);
+    if (match && match.similarity >= CHAIN_MIN_SIMILARITY) {
+      const chain = this.findChain(match.record.sequence);
+      if (chain) return this.handleChain(chain, cleanText, streaming);
     }
     if (match?.mode === "hint") {
       this.addHistoryMessage(this.getSessionId(), {
@@ -443,55 +442,67 @@ export class UnifiedCortex extends BaseOrchestrator {
     return streaming ? content : "";
   }
 
-  /** Cadena scrape_url → database_insert: pide la URL si falta, o ejecuta sin LLM. */
-  private async handleScrapeAndStore(
+  /** Cadena del perfil que coincide con la secuencia de Jev y cuyas células están permitidas. */
+  private findChain(sequence: string): ChainDefinition | undefined {
+    const key = sequenceKey(sequence);
+    const allowed = this.organisms[0]?.getAllowedCells() ?? [];
+    return this.chains.find(
+      (chain) =>
+        chainSequence(chain) === key &&
+        chain.steps.every((step) => allowed.includes(step.cell)),
+    );
+  }
+
+  /** Ejecuta la cadena sin LLM, o pide al usuario el dato que le falta. */
+  private async handleChain(
+    chain: ChainDefinition,
     text: string,
     streaming: boolean,
   ): Promise<string> {
     this.addUserMessage(text);
-    const url = extractUrl(text);
-    if (!url) {
-      this.pendingChains.set(this.getSessionId(), SCRAPE_STORE_SEQUENCE);
-      return this.replyAssistant(URL_QUESTION, streaming);
+    const requirement = chain.requires[0];
+    if (!requirement) {
+      return this.replyAssistant(
+        await this.runChainSteps(chain, {}),
+        streaming,
+      );
     }
-    return this.replyAssistant(await this.runScrapeAndStore(url), streaming);
+    const value = EXTRACTORS[requirement.extractor](text);
+    if (value === null) {
+      this.pendingChains.set(this.getSessionId(), chain.id);
+      return this.replyAssistant(requirement.ask, streaming);
+    }
+    return this.replyAssistant(
+      await this.runChainSteps(chain, { [requirement.name]: value }),
+      streaming,
+    );
   }
 
-  /**
-   * Ejecuta scrape_url y db_insert en células distintas.
-   * Cada paso muta la célula al tipo que expone la herramienta (sensory, memory).
-   */
-  private async runScrapeAndStore(url: string): Promise<string> {
-    const metadata = { chain: SCRAPE_STORE_SEQUENCE };
+  /** Ejecuta los pasos de la cadena. Los errores se devuelven como texto. */
+  private async runChainSteps(
+    chain: ChainDefinition,
+    values: Record<string, string>,
+  ): Promise<string> {
+    const port: ChainPort = {
+      mutate: async (cellType) => {
+        await this.routeStimulus({
+          type: cellType,
+          source: "jev-chain",
+          metadata: { chain: chain.id },
+        });
+      },
+      callTool: (name, args) => this.executeAction(name, args),
+      runSetup: async (sql) => {
+        // DDL de infraestructura: va directo al organismo para que no quede como paso del reflex.
+        await this.organisms[0].callTool("db_query", { sql });
+      },
+    };
     try {
-      await this.routeStimulus({
-        type: "sensory",
-        source: "jev-chain",
-        metadata,
-      });
-      const page = await this.executeAction("scrape_url", { url });
-
-      await this.routeStimulus({
-        type: "memory",
-        source: "jev-chain",
-        metadata,
-      });
-      // DDL de infraestructura: va directo al organismo para que no quede como paso del reflex.
-      await this.organisms[0].callTool("db_query", {
-        sql: CREATE_CHAIN_TABLE_SQL,
-      });
-      await this.executeAction("db_insert", {
-        table: CHAIN_TABLE,
-        data: { url, payload: page, created_at: new Date().toISOString() },
-      });
-
-      return `Guardé el contenido de ${url} en la tabla ${CHAIN_TABLE}.`;
+      await runChain(chain, values, port);
+      return chain.done;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      log.error("Cadena scrape_url → database_insert falló", {
-        url,
-        error: message,
-      });
+      log.error("Cadena del perfil falló", { chain: chain.id, error: message });
       return `No pude completar la ejecución: ${message}`;
     }
   }
