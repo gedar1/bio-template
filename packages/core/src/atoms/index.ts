@@ -15,10 +15,6 @@ export type {
   LLMTool,
 } from "../system/providers/providerTypes.js";
 export { normalizeSequence } from "./sequence.js";
-export {
-  extractParamsForReflex,
-} from "./paramExtractor.js";
-export type { ExtractedParams, StepParams } from "./paramExtractor.js";
 export { summarizeToolResult } from "./toolResultFormatter.js";
 export { getModuleDir, getProjectRoot } from "./paths.js";
 export { preCellRoute } from "./cellRouter.js";

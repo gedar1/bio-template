@@ -4,73 +4,86 @@ inclusion: manual
 
 # Cómo se ejecuta un mensaje: del chat a la mutación de la célula
 
-Fuentes: `system/implementations/UnifiedCortex.ts`, `system/BaseOrchestrator.ts`, `organisms/BaseOrganisms.ts`, `cells/CellServer.ts`. Este documento describe el código vigente. Si algo no coincide, el código manda.
+Fuentes: `system/implementations/UnifiedCortex.ts`, `system/chainRunner.ts`, `atoms/chainSpec.ts`, `system/BaseOrchestrator.ts`, `organisms/BaseOrganisms.ts`, `cells/CellServer.ts`. Este documento describe el código vigente. Si algo no coincide, el código manda.
 
 ## Resumen
 
-Un mensaje entra por `UnifiedCortex.chat()` (ruta no streaming, usada por la API de chat, MCP, CLI y scheduler). Antes de llamar a un LLM, el cortex intenta resolver el mensaje con código y con Jev:
+Un mensaje entra por `UnifiedCortex.chat()` (no streaming) o `UnifiedCortex.chatStream()`. Ambos llaman a `runConversation`, que intenta resolver el mensaje con código y con Jev antes de llamar a un LLM:
 
-1. Si hay un mensaje pendiente de URL, lo resuelve.
-2. Si Jev detecta la cadena `scrape_url→db_insert` con similitud ≥ 0.7, la ejecuta sin LLM.
+1. Si hay una ejecución pendiente de la sesión, el mensaje responde al dato que faltaba.
+2. Si Jev detecta una secuencia que coincide con una cadena declarada en el perfil activo, con similitud ≥ 0.7, la cadena se ejecuta sin LLM.
 3. Si Jev sugiere otra secuencia, la agrega como pista en el historial.
 4. Si Jev elige una célula, la muta antes del LLM (pre-routing).
 5. Si nada de lo anterior resuelve el mensaje, el LLM decide. Sus tool calls se ejecutan con `executeAction`.
 
 El LLM no ejecuta nada por sí mismo. Solo devuelve tool calls, y el código decide cómo ejecutarlas.
 
-## Paso a paso (ruta `chat()`)
+## Paso a paso
 
-### 1. Entrada: `chat(userMessage)`
+### 1. Entrada: `chat()` o `chatStream()`
 
-- Marca la sesión activa y llama a `checkTokenLimit()`.
-- Llama a `runConversation(userMessage, streaming = false)`.
-- Si todo sale bien, registra la métrica `task_completed` y guarda la secuencia con `saveReflex()`.
-- Si falla, registra `task_error` y relanza el error.
+- `chat()` llama a `checkTokenLimit()` y luego a `runConversation(userMessage, false)`. Si todo sale bien, registra `task_completed`. Si falla, registra `task_error` y relanza.
+- `chatStream()` hace lo mismo con `runConversation(userMessage, true, signal)`.
+- Las dos rutas comparten el gate, la pista de Jev, el pre-routing y el bucle del LLM.
 
-### 2. Mensaje pendiente
+### 2. Ejecución pendiente
 
-`runConversation` revisa `pendingChains` para la sesión.
+`runConversation` revisa `pendingChains` para la sesión. Si hay una:
 
-- Si hay un pendiente de la cadena `scrape_url→db_insert`, se limpia.
-- Si el mensaje actual contiene una URL, se ejecuta `runScrapeAndStore(url)`.
-- Si no contiene URL, responde `PENDING_DISCARDED_WARNING`. Ese mensaje no se procesa: el usuario debe reenviarlo.
+- Limpia el pendiente y agrega el mensaje al historial.
+- Busca la cadena por `chainId` y extrae el dato con el extractor que declara `requires` (`url` o `text`).
+- Si el dato aparece, ejecuta la cadena con ese valor.
+- Si no aparece, responde `PENDING_DISCARDED_WARNING`. El mensaje no se procesa: el usuario debe reenviarlo.
+
+El pendiente vive en memoria (`DefaultPendingChainStore`), tiene vencimiento de 24 horas y se pierde al reiniciar el proceso.
 
 ### 3. Consulta a Jev (`queryReflex`)
 
-Solo si el mensaje no es una respuesta a un pendiente:
+Solo si no hay pendiente:
 
 1. `trackInput(cleanText)` registra el input y reinicia el guardarraíl de mutaciones (`_mutatedTypes`).
-2. `queryReflex(cleanText)` llama a `DefaultReflexExecutor.queryReflex(input, allowedCells)`. Ese método arma el catálogo de herramientas con `buildJevToolCatalog(allowedCells)` (filtrado de `tools.json` por las células permitidas) y llama a `jevEvaluateAll`.
+2. `queryReflex(cleanText)` llama a `DefaultReflexExecutor.queryReflex(input, allowedCells)`. Arma el catálogo con `buildJevToolCatalog(allowedCells)` (filtrado de `tools.json` por las células permitidas) y llama a `jevEvaluateAll`.
 3. `jevEvaluateAll` hace dos llamadas a Jev, en secuencia:
-   - primer paso y si la tarea es multi-paso;
+   - primer paso, y si la tarea es multi-paso;
    - siguiente paso, con el primero como dato. `ninguno` significa que la tarea termina en un paso.
 
-Jev devuelve `ReflexMatch` con `record.sequence`, `similarity` y `mode: "hint"`.
+Jev devuelve un `ReflexMatch` con `record.sequence` y `similarity`.
 
 ### 4. Gate de cadenas (sin LLM)
 
-Si `match.record.sequence` es `scrape_url→db_insert` y `similarity ≥ CHAIN_MIN_SIMILARITY (0.7)`, se llama a `handleScrapeAndStore(cleanText)`:
+Si `match.similarity ≥ CHAIN_MIN_SIMILARITY (0.7)`, el cortex busca en el perfil una cadena (`findChain`) que cumpla dos condiciones:
 
-- Si el mensaje no trae URL (`extractUrl` no encuentra ninguna), guarda el pendiente y responde `URL_QUESTION` ("¿Cuál es la URL a scrapear?").
-- Si trae URL, ejecuta `runScrapeAndStore(url)`.
+- su secuencia de herramientas (`chainSequence`) es igual a la secuencia de Jev, después de normalizar `->` y `→` (`sequenceKey`);
+- todas sus células están en `allowedCells` del tenant.
 
-`runScrapeAndStore` ejecuta los pasos en orden. Cada cambio de célula pasa por `routeStimulus`:
+Si no encuentra ninguna, el gate no aplica y el mensaje sigue al paso 5.
 
-| Paso | Llamada                                                                                      | Efecto                                                                                                   |
-| ---- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| 1    | `routeStimulus({type: "sensory", source: "jev-chain"})`                                      | Muta la célula a `sensory`.                                                                              |
-| 2    | `executeAction("scrape_url", {url})`                                                         | Scrapea la URL.                                                                                          |
-| 3    | `routeStimulus({type: "memory", source: "jev-chain"})`                                       | Muta la célula a `memory`.                                                                               |
-| 4    | `organisms[0].callTool("db_query", {sql: CREATE_CHAIN_TABLE_SQL})`                           | Crea `jev_chain_results` si no existe. Va directo al organismo para no registrarse como paso del reflex. |
-| 5    | `executeAction("db_insert", {table: "jev_chain_results", data: {url, payload, created_at}})` | Guarda el resultado en la base del tenant.                                                               |
+Si encuentra una, `handleChain` hace esto:
 
-Si algún paso falla, se registra el error y la respuesta indica qué falló.
+- Si la cadena declara `requires`, aplica el extractor del requerimiento al mensaje (`EXTRACTORS`: `url` usa `extractUrl`; `text` toma el texto limpio).
+- Si el extractor no encuentra el dato, guarda el `chainId` como pendiente y responde con la pregunta del requerimiento (por ejemplo, "¿Cuál es la URL a scrapear?").
+- Si lo encuentra, ejecuta `runChainSteps`.
+
+`runChain` (`system/chainRunner.ts`) ejecuta en este orden:
+
+1. **Setup:** si la cadena tiene sentencias `setup`, muta a la célula `memory` y ejecuta cada SQL con `db_query` directo sobre el organismo. Así el DDL no queda como paso del reflex. Por ejemplo, `CREATE TABLE IF NOT EXISTS` crea la tabla de resultados del tenant.
+2. **Pasos:** por cada paso del perfil, muta a la célula del paso (`routeStimulus` con `source: "jev-chain"`), resuelve los argumentos y llama a la herramienta con `executeAction`. Los argumentos aceptan `$requires.<nombre>` (dato extraído), `$previous` (salida del paso anterior), `$now` (fecha actual) y literales.
+
+Si un paso falla, la respuesta dice qué falló. Si todo sale bien, la respuesta es el texto `done` de la cadena.
 
 La respuesta se guarda en el historial con `replyAssistant`. No hay llamada al LLM.
 
+Ejemplo del perfil `domain` (`config/domain-profile.ts`), cadena `scrape-store`:
+
+| Paso | Mutación  | Llamada                                                      |
+| ---- | --------- | ------------------------------------------------------------ |
+| 0    | `memory`  | Setup: `CREATE TABLE IF NOT EXISTS jev_chain_results ...`    |
+| 1    | `sensory` | `scrape_url` con `url = $requires.url`                       |
+| 2    | `memory`  | `db_insert` en `jev_chain_results` con `payload = $previous` |
+
 ### 5. Pista de Jev (`hint`)
 
-Si Jev devuelve otra secuencia en modo `hint`, `runConversation` agrega un mensaje de sistema al historial:
+Si el gate no aplica y Jev devuelve una secuencia en modo `hint`, se agrega un mensaje de sistema al historial:
 
 ```
 [Jev] Secuencia sugerida: <secuencia>. Úsala como guía si aplica.
@@ -140,38 +153,33 @@ Después de la mutación, `getUnifiedTools()` devuelve el catálogo nuevo. La c�
 
 ## Ruta de streaming (`chatStream`)
 
-Esta ruta tiene un comportamiento distinto y debe tenerse en cuenta antes de depender del gate de cadenas:
-
-1. `BaseOrchestrator.chatStream` llama a `trackInput` y `queryReflex`. Si Jev devuelve `hint`, agrega un mensaje `[Memoria Refleja]` y antepone `[Contexto: secuencia sugerida: ...]` al mensaje del usuario.
-2. `UnifiedCortex.chatStream` llama a `runConversation(userMessage, streaming = true, signal)`. Esa es la misma ruta que `chat()`: el pendiente de URL, el gate `scrape_url→db_insert`, la pista de Jev, el pre-routing y el bucle del LLM se evalúan igual en streaming y sin streaming.
-3. Al terminar, `chatStream` registra la métrica `task_completed` y guarda la secuencia con `saveReflex()`.
-
-Hoy el gate solo funciona en `chat()`. La ruta de streaming (`ProductionServer` → `TenantManager.chatStream`) no lo usa. Corregirlo es una decisión pendiente.
+`UnifiedCortex.chatStream` sobrescribe el de `BaseOrchestrator`. Llama a `runConversation(userMessage, true, signal)`, así que el pendiente, el gate, la pista de Jev, el pre-routing y el bucle del LLM se evalúan igual que en `chat()`.
 
 ## Tabla de pasos y ubicación
 
-| Paso                | Función                                                              | Archivo                                                     |
-| ------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Entrada             | `chat()`, `chatStream()`                                             | `system/implementations/UnifiedCortex.ts`                   |
-| Pendiente y gate    | `runConversation()`, `handleScrapeAndStore()`                        | `UnifiedCortex.ts`                                          |
-| Ejecución de cadena | `runScrapeAndStore()`                                                | `UnifiedCortex.ts`                                          |
-| Consulta Jev        | `queryReflex()`, `trackInput()`                                      | `system/BaseOrchestrator.ts`                                |
-| Selección de cadena | `jevEvaluateAll()`                                                   | `atoms/reflexSelector.ts`                                   |
-| Catálogo para Jev   | `buildJevToolCatalog()`                                              | `config/toolCatalog.ts`                                     |
-| Pre-routing         | `preRoute()`, `preCellRoute()`                                       | `UnifiedCortex.ts`, `atoms/cellRouter.ts`                   |
-| Bucle LLM           | `runConversation()` (bucle de proveedores)                           | `UnifiedCortex.ts`                                          |
-| Tool calls          | `executeToolCalls()`                                                 | `UnifiedCortex.ts`                                          |
-| Acción              | `executeAction()`                                                    | `system/BaseOrchestrator.ts`                                |
-| Mutación            | `routeStimulus()`                                                    | `system/BaseOrchestrator.ts`                                |
-| Organismo           | `stimulate()`, `callTool()`, `inspectTools()`                        | `organisms/BaseOrganisms.ts`                                |
-| Célula              | `stimulate_differentiation`, `disposeMolecules()`, `activateTypes()` | `cells/CellServer.ts`                                       |
-| Historial           | `saveReflex()`, `ReflexMolecule.save()`                              | `system/BaseOrchestrator.ts`, `molecules/ReflexMolecule.ts` |
+| Paso                | Función                                                              | Archivo                                                      |
+| ------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Entrada             | `chat()`, `chatStream()`                                             | `system/implementations/UnifiedCortex.ts`                    |
+| Pendiente           | `runConversation()`, `pendingChains`                                 | `UnifiedCortex.ts`, `strategies/DefaultPendingChainStore.ts` |
+| Consulta Jev        | `queryReflex()`, `trackInput()`                                      | `system/BaseOrchestrator.ts`                                 |
+| Selección de cadena | `jevEvaluateAll()`                                                   | `atoms/reflexSelector.ts`                                    |
+| Catálogo para Jev   | `buildJevToolCatalog()`                                              | `config/toolCatalog.ts`                                      |
+| Gate de cadenas     | `findChain()`, `handleChain()`, `runChainSteps()`                    | `UnifiedCortex.ts`                                           |
+| Ejecución de cadena | `runChain()`, `resolveArgs()`                                        | `system/chainRunner.ts`, `atoms/chainSpec.ts`                |
+| Extractores         | `EXTRACTORS`, `extractUrl()`                                         | `atoms/chainSpec.ts`, `atoms/chainExtraction.ts`             |
+| Pre-routing         | `preRoute()`, `preCellRoute()`                                       | `UnifiedCortex.ts`, `atoms/cellRouter.ts`                    |
+| Bucle LLM           | `runConversation()` (bucle de proveedores)                           | `UnifiedCortex.ts`                                           |
+| Tool calls          | `executeToolCalls()`                                                 | `UnifiedCortex.ts`                                           |
+| Acción              | `executeAction()`                                                    | `system/BaseOrchestrator.ts`                                 |
+| Mutación            | `routeStimulus()`                                                    | `system/BaseOrchestrator.ts`                                 |
+| Organismo           | `stimulate()`, `callTool()`, `inspectTools()`                        | `organisms/BaseOrganisms.ts`                                 |
+| Célula              | `stimulate_differentiation`, `disposeMolecules()`, `activateTypes()` | `cells/CellServer.ts`                                        |
+| Historial           | `saveReflex()`, `ReflexMolecule.save()`                              | `system/BaseOrchestrator.ts`, `molecules/ReflexMolecule.ts`  |
 
 ## Pendientes conocidos
 
-- Gate de cadenas en streaming: ver la sección anterior.
-- El pendiente de URL se guarda en memoria del proceso (`pendingChains`), no en base de datos.
-- `CHAIN_TABLE` (`jev_chain_results`) es fija. Cada caso de negocio tendrá su propia tabla.
+- El pendiente se guarda en memoria del proceso. Un reinicio lo borra.
+- Las cadenas se declaran en `domain-profile.ts`. Un perfil sin cadenas no activa el gate.
 
 ## Relaciones
 

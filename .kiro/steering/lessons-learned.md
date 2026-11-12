@@ -36,7 +36,7 @@ inclusion: manual
 
 15. **Claves foráneas de métricas.** `platform_metrics.tenant_id` referencia `platform_tenants`. Si el tenant no está registrado, cada métrica falla con `FOREIGN KEY constraint failed`, aunque el chat funcione. Registrar el tenant al arrancar. Revisar también el `CHECK` de perfiles antes de usar un perfil nuevo.
 
-16. **Reflex: formatos de secuencia distintos.** Los reflexes guardados usan `->` y Jev usa `→`. Normalizar antes de comparar (`isScrapeStoreSequence`).
+16. **Reflex: formatos de secuencia distintos.** Los reflexes guardados usan `->` y Jev usa `→`. Normalizar antes de comparar (`sequenceKey` en `atoms/chainSpec.ts`).
 
 17. **Preguntas paralelas a Jev no se ven entre sí.** Si una pregunta depende de la respuesta de otra, hacer dos llamadas secuenciales. Una pregunta de "siguiente paso" sin el primer paso repite el primero.
 

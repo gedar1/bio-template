@@ -5,6 +5,10 @@ import { createLogger } from "../config/logger.js";
 import { BioCoreError } from "../errors.js";
 import { HttpRateLimiter } from "./middleware/httpRateLimiter.js";
 import { checkAuth, type TokenDecision } from "./middleware/apiAuth.js";
+import {
+  readCookie,
+  TENANT_SESSION_COOKIE,
+} from "./middleware/sessionCookie.js";
 
 export type SSEHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
@@ -150,6 +154,15 @@ export class HealthServer {
           }
         }
 
+        // Sesión del tenant por cookie: si no hay Authorization, el JWT de la
+        // cookie se trata como Bearer. Así los endpoints y SSE no cambian.
+        if (!req.headers.authorization) {
+          const sessionToken = readCookie(req, TENANT_SESSION_COOKIE);
+          if (sessionToken) {
+            req.headers.authorization = `Bearer ${sessionToken}`;
+          }
+        }
+
         // Autenticación — si API_SECRET está configurado en .env
         const authResult = checkAuth(req, this.tokenVerifier);
         if (authResult) {
@@ -202,12 +215,7 @@ export class HealthServer {
                 params._authHeader = req.headers.authorization;
               }
               const data = await provider(params);
-              // Unwrap PlatformResponse if present
-              if (data && typeof data === "object" && "_statusCode" in data) {
-                this.json(res, data._statusCode, data.body);
-              } else {
-                this.json(res, 200, data);
-              }
+              this.sendProviderResult(res, data);
             } catch (error: any) {
               const payload =
                 error instanceof BioCoreError
@@ -237,12 +245,7 @@ export class HealthServer {
                   parsed._authHeader = req.headers.authorization;
                 }
                 const data = await provider(parsed);
-                // Unwrap PlatformResponse if present
-                if (data && typeof data === "object" && "_statusCode" in data) {
-                  this.json(res, data._statusCode, data.body);
-                } else {
-                  this.json(res, 200, data);
-                }
+                this.sendProviderResult(res, data);
               } catch (error: any) {
                 const payload =
                   error instanceof BioCoreError
@@ -363,6 +366,21 @@ export class HealthServer {
   private json(res: ServerResponse, code: number, data: any): void {
     res.writeHead(code, { "Content-Type": "application/json" });
     res.end(JSON.stringify(data));
+  }
+
+  /**
+   * Responde con lo que devolvió un proveedor. Si trae `_statusCode`, se desenvuelve.
+   * `_setCookie` (opcional) se envía como cabecera `Set-Cookie`.
+   */
+  private sendProviderResult(res: ServerResponse, data: any): void {
+    if (data && typeof data === "object" && "_statusCode" in data) {
+      if (typeof data._setCookie === "string") {
+        res.setHeader("Set-Cookie", data._setCookie);
+      }
+      this.json(res, data._statusCode, data.body);
+      return;
+    }
+    this.json(res, 200, data);
   }
 
   private readBody(req: IncomingMessage): Promise<string> {

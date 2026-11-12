@@ -1,52 +1,21 @@
 /**
- * Átomo de la cadena scrape_url → database_insert.
+ * Átomo de extracción de URLs del mensaje del usuario.
  * Función pura: sin estado, sin I/O.
  *
- * Define la cadena, su tabla de destino fija y la extracción de URL del mensaje.
  * La extracción no tiene fallback: si el mensaje no trae una URL explícita o un
  * dominio con TLD, devuelve null y el flujo debe preguntarla.
  */
 
-/** Secuencia de herramientas que produce Jev y que este flujo ejecuta. */
-export const SCRAPE_STORE_SEQUENCE = "scrape_url→db_insert";
-
 /**
- * Similitud mínima del reflex seleccionado para ejecutar la cadena sin LLM.
+ * Similitud mínima del reflex seleccionado para ejecutar una cadena sin LLM.
  * Igual al MIN_CONFIDENCE de cellRouter. Jev devolvió 0.85 a 0.89 en pruebas,
  * así que 0.85 quedaba en el borde.
  */
 export const CHAIN_MIN_SIMILARITY = 0.7;
 
-/**
- * Compara una secuencia guardada en reflexes con la cadena del flujo.
- * Los reflexes guardados usan "->" y Jev usa "→", así que se normalizan ambos.
- */
-export function isScrapeStoreSequence(sequence: string | undefined): boolean {
-  if (!sequence) return false;
-  const steps = sequence
-    .split(/→|->/)
-    .map((step) => step.trim())
-    .filter(Boolean);
-  return steps.join("→") === SCRAPE_STORE_SEQUENCE;
-}
-
-/** Tabla fija de destino para este corte. Se validará por tarea en una etapa posterior. */
-export const CHAIN_TABLE = "jev_chain_results";
-
-/** DDL idempotente de la tabla de destino. */
-export const CREATE_CHAIN_TABLE_SQL = `CREATE TABLE IF NOT EXISTS ${CHAIN_TABLE} (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  url TEXT NOT NULL,
-  payload TEXT,
-  created_at TEXT NOT NULL
-)`;
-
-/** Pregunta que se muestra cuando la cadena necesita la URL. */
-export const URL_QUESTION = "¿Cuál es la URL a scrapear?";
-
-/** Aviso cuando hay una ejecución pendiente y el siguiente mensaje no trae URL. */
+/** Aviso cuando hay una ejecución pendiente y el siguiente mensaje no trae el dato requerido. */
 export const PENDING_DISCARDED_WARNING =
-  "Descarté la ejecución pendiente de scrapear porque no recibí una URL. Envía de nuevo tu instrucción con la URL.";
+  "Descarté la ejecución pendiente porque el mensaje no trae el dato que necesitaba. Envía de nuevo tu instrucción con ese dato.";
 
 /** Extensiones de archivo comunes que no deben tomarse como TLD de un dominio. */
 const FILE_EXTENSIONS = new Set([
