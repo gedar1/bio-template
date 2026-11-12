@@ -157,20 +157,21 @@ export class TenantManager {
 
     log.info({ tenantId, profile }, "Creando nuevo tenant");
 
-    const cortex = new UnifiedCortex({
-      tenantId,
-      primaryProvider: this.desiredConfig.primaryProvider,
-      fallbackOrder: [...this.desiredConfig.fallbackOrder],
-      metrics: this.metrics ?? undefined,
-      tenantLimits: this.registry ?? undefined,
-    });
-
     // Obtener allowedCells del perfil — primero buscar en composed profiles,
     // luego fallback a los perfiles cargados del JSON
     const composedProfiles = getAvailableProfiles();
     const profileConfig =
       composedProfiles[profile] || tenantProfiles.profiles[profile];
     const allowedCells = profileConfig?.allowedCells;
+    const cortex = new UnifiedCortex({
+      tenantId,
+      primaryProvider: this.desiredConfig.primaryProvider,
+      fallbackOrder: [...this.desiredConfig.fallbackOrder],
+      metrics: this.metrics ?? undefined,
+      tenantLimits: this.registry ?? undefined,
+      chains: composedProfiles[profile]?.chains ?? [],
+    });
+
 
     const organism = new TenantOrganism(tenantId, allowedCells);
     cortex.registerOrganism(organism);

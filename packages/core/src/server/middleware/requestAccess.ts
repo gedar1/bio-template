@@ -122,6 +122,7 @@ const ENDPOINT_MIN_ROLE: Readonly<Record<string, AccessRole>> = {
   "inventory/alerts": "viewer",
   websocket: "viewer",
   role: "viewer",
+  "tenant/auth/me": "viewer",
 
   // Operación diaria del tenant
   chat: "operator",

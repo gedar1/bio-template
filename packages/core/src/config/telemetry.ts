@@ -46,7 +46,7 @@ let _sdk: NodeSDK | null = null;
  * - Producción: exporta al colector OTLP (Jaeger, Datadog, Grafana Tempo, etc.)
  *
  * @example
- * // Al inicio de NervousSystem.ts o ProductionServer.ts:
+ * // Al inicio de ProductionServer.ts:
  * import { initTelemetry } from "../config/telemetry.js";
  * initTelemetry();
  */

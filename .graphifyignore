@@ -1,0 +1,8 @@
+# Exclusiones para graphify (sintaxis de .gitignore).
+# Artefactos de tareas y de agentes: no son código fuente del producto.
+.agents/
+graphify-out/
+# JSON de configuración y datos: no tienen estructura de código que extraer.
+*.json
+*.tsbuildinfo
+data/
