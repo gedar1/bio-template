@@ -209,8 +209,6 @@ export class CellServer implements ICell {
         };
       },
     );
-
-
   }
 
   /**
@@ -619,11 +617,18 @@ export class CellServer implements ICell {
     this.getToolRegistrationServer().registerTool(
       "db_query",
       {
-        description: "Ejecuta una query SQL personalizada",
-        inputSchema: { sql: z.string(), params: z.array(z.any()).optional() },
+        description:
+          "Consulta de solo lectura sobre la base del tenant (SELECT o WITH). No permite escribir, borrar ni adjuntar otras bases.",
+        inputSchema: {
+          sql: z.string(),
+          params: z
+            .array(z.string())
+            .optional()
+            .describe("Valores de los placeholders ? en orden, como texto"),
+        },
       },
       async ({ sql, params }) => {
-        const result = await this.database!.query(sql, params);
+        const result = await this.database!.queryReadOnly(sql, params);
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
@@ -1071,8 +1076,6 @@ export class CellServer implements ICell {
   async dispose(): Promise<void> {
     await this.disposeMolecules();
   }
-
-
 
   /**
    * Arranca la célula usando el transporte indicado.
