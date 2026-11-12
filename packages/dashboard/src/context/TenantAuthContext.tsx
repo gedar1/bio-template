@@ -10,48 +10,45 @@ import {
 } from "react";
 import type { UserRole } from "../types/dashboard";
 
-// ─── JWT Decode Utility ─────────────────────────────────────────────────────
+// ─── Session ────────────────────────────────────────────────────────────────
 
-interface TenantJWTPayload {
+/**
+ * Sesión del tenant tal como la devuelve /api/tenant/auth/me.
+ * El JWT vive en una cookie httpOnly que el navegador envía sola, así que el
+ * dashboard nunca lo lee ni lo guarda.
+ */
+interface TenantSession {
   tenant_id: string;
   role: UserRole;
   profile: string;
-  iat: number;
-  exp: number;
 }
 
-function decodeJWT(token: string): TenantJWTPayload | null {
+/** Intervalo para revalidar la sesión (detecta expiración y revocación). */
+const SESSION_CHECK_MS = 60_000;
+
+/** Evento de window que avisa cuando cambia la sesión del tenant. */
+export const TENANT_SESSION_EVENT = "biocore:tenant-session";
+
+function notifySessionChange(): void {
+  window.dispatchEvent(new Event(TENANT_SESSION_EVENT));
+}
+
+/** Lee la sesión con la cookie del navegador. Devuelve null si no hay sesión válida. */
+export async function fetchTenantSession(): Promise<TenantSession | null> {
   try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = JSON.parse(atob(parts[1]));
-    if (!payload.tenant_id || !payload.role || !payload.profile) return null;
-    return payload as TenantJWTPayload;
+    const res = await fetch("/api/tenant/auth/me");
+    if (!res.ok) return null;
+    const json = await res.json();
+    const data = json?.data;
+    if (!data?.tenant_id || !data?.role || !data?.profile) return null;
+    return {
+      tenant_id: data.tenant_id as string,
+      role: data.role as UserRole,
+      profile: data.profile as string,
+    };
   } catch {
     return null;
   }
-}
-
-function isTokenExpired(payload: TenantJWTPayload): boolean {
-  return Date.now() >= payload.exp * 1000;
-}
-
-// ─── Session Storage Keys ───────────────────────────────────────────────────
-
-const TENANT_TOKEN_KEY = "tenant_token";
-
-function getStoredToken(): string | null {
-  return sessionStorage.getItem(TENANT_TOKEN_KEY);
-}
-
-function setStoredToken(token: string): void {
-  sessionStorage.setItem(TENANT_TOKEN_KEY, token);
-  clearApiCache();
-}
-
-function clearStoredToken(): void {
-  sessionStorage.removeItem(TENANT_TOKEN_KEY);
-  clearApiCache();
 }
 
 // ─── Context Interface ──────────────────────────────────────────────────────
@@ -89,43 +86,44 @@ interface TenantAuthProviderProps {
 export function TenantAuthProvider({
   children,
 }: Readonly<TenantAuthProviderProps>) {
-  const [token, setToken] = useState<string | null>(null);
-  const [claims, setClaims] = useState<TenantJWTPayload | null>(null);
+  const [session, setSession] = useState<TenantSession | null>(null);
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Initialize from sessionStorage
+  // Restaura la sesión que quedó en la cookie al recargar la página.
   useEffect(() => {
-    const stored = getStoredToken();
-    if (stored) {
-      const payload = decodeJWT(stored);
-      if (payload && !isTokenExpired(payload)) {
-        setToken(stored);
-        setClaims(payload);
-      } else {
-        clearStoredToken();
+    let cancelled = false;
+    fetchTenantSession().then((restored) => {
+      if (cancelled) return;
+      if (restored) {
+        setSession(restored);
+        setDisplayName(restored.tenant_id);
       }
-    }
-    setLoading(false);
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Check token expiration periodically
+  // Revalida la sesión periódicamente. Si el servidor ya no la reconoce, cierra localmente.
   useEffect(() => {
-    if (!claims) return;
+    if (!session) return;
 
     const interval = setInterval(() => {
-      if (isTokenExpired(claims)) {
-        clearStoredToken();
-        setToken(null);
-        setClaims(null);
+      void fetchTenantSession().then((current) => {
+        if (current) return;
+        clearApiCache();
+        setSession(null);
         setDisplayName(null);
         setError("Session expired. Please log in again.");
-      }
-    }, 30_000); // Check every 30 seconds
+        notifySessionChange();
+      });
+    }, SESSION_CHECK_MS);
 
     return () => clearInterval(interval);
-  }, [claims]);
+  }, [session]);
 
   const login = useCallback(async (apiKey: string, role?: string) => {
     setError(null);
@@ -150,24 +148,18 @@ export function TenantAuthProvider({
         return;
       }
 
-      const receivedToken: string | undefined =
-        json?.data?.token ?? json?.token;
-      if (!receivedToken) {
-        setError("Invalid server response.");
+      // El servidor fija la cookie de sesión en esta respuesta. Leemos el rol con /me.
+      const established = await fetchTenantSession();
+      if (!established) {
+        setError("No se pudo iniciar la sesión en el navegador.");
         return;
       }
 
-      const payload = decodeJWT(receivedToken);
-      if (!payload) {
-        setError("Invalid token received.");
-        return;
-      }
-
-      setStoredToken(receivedToken);
-      setToken(receivedToken);
-      setClaims(payload);
-      setDisplayName(json?.data?.display_name ?? payload.tenant_id);
+      clearApiCache();
+      setSession(established);
+      setDisplayName(established.tenant_id);
       setError(null);
+      notifySessionChange();
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Network error. Please retry.";
@@ -178,26 +170,29 @@ export function TenantAuthProvider({
   }, []);
 
   const logout = useCallback(() => {
-    clearStoredToken();
-    setToken(null);
-    setClaims(null);
+    clearApiCache();
+    setSession(null);
     setDisplayName(null);
     setError(null);
+    // La cookie se borra en el servidor. Avisamos cuando termina la petición.
+    fetch("/api/tenant/auth/logout", { method: "POST" })
+      .catch(() => undefined)
+      .finally(notifySessionChange);
   }, []);
 
   const value: TenantAuthContextValue = useMemo(
     () => ({
-      isAuthenticated: !!token && !!claims && !isTokenExpired(claims),
-      tenantId: claims?.tenant_id ?? null,
-      role: claims?.role ?? null,
-      profile: claims?.profile ?? null,
+      isAuthenticated: !!session,
+      tenantId: session?.tenant_id ?? null,
+      role: session?.role ?? null,
+      profile: session?.profile ?? null,
       displayName,
       loading,
       error,
       login,
       logout,
     }),
-    [token, claims, displayName, loading, error, login, logout],
+    [session, displayName, loading, error, login, logout],
   );
 
   return (

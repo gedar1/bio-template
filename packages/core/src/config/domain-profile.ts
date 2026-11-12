@@ -41,4 +41,28 @@ export const domainProfile: ProfileConfig = {
   ],
   agentFile: "config/domain-agent.md",
   description: "Perfil del dominio — personaliza esta descripción",
+  chains: [
+    {
+      id: "scrape-store",
+      description: "Guarda el contenido de una URL en la tabla de resultados del tenant",
+      requires: [
+        { name: "url", extractor: "url", ask: "¿Cuál es la URL a scrapear?" },
+      ],
+      steps: [
+        { cell: "sensory", tool: "scrape_url", args: { url: "$requires.url" } },
+        {
+          cell: "memory",
+          tool: "db_insert",
+          args: {
+            table: "jev_chain_results",
+            data: { url: "$requires.url", payload: "$previous", created_at: "$now" },
+          },
+        },
+      ],
+      setup: [
+        "CREATE TABLE IF NOT EXISTS jev_chain_results (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, payload TEXT, created_at TEXT NOT NULL)",
+      ],
+      done: "Guardé el contenido de la URL en la tabla jev_chain_results.",
+    },
+  ],
 };

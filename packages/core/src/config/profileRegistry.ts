@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ChainDefinitionSchema } from "./chainSchema.js";
 import { BioCoreError } from "../errors.js";
 import { DOMAIN_PROFILE_ID, domainProfile } from "./domain-profile.js";
 
@@ -8,13 +9,38 @@ const ProfileIdSchema = z
   .max(64)
   .regex(/^[a-z0-9-]+$/, "profileId must be alphanumeric with hyphens");
 
-const ProfileConfigSchema = z.object({
-  allowedCells: z
-    .array(z.string())
-    .min(1, "allowedCells must have at least 1 element"),
-  agentFile: z.string().min(1, "agentFile must be a non-empty string"),
-  description: z.string().max(256).optional(),
-});
+const ProfileConfigSchema = z
+  .object({
+    allowedCells: z
+      .array(z.string())
+      .min(1, "allowedCells must have at least 1 element"),
+    agentFile: z.string().min(1, "agentFile must be a non-empty string"),
+    description: z.string().max(256).optional(),
+    chains: z.array(ChainDefinitionSchema).default([]),
+  })
+  .superRefine((profile, ctx) => {
+    const cells = new Set(profile.allowedCells);
+    const ids = new Set<string>();
+    profile.chains.forEach((chain, index) => {
+      if (ids.has(chain.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["chains", index, "id"],
+          message: `id de cadena duplicado: ${chain.id}`,
+        });
+      }
+      ids.add(chain.id);
+      chain.steps.forEach((step, stepIndex) => {
+        if (!cells.has(step.cell)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["chains", index, "steps", stepIndex, "cell"],
+            message: `la célula "${step.cell}" no está en allowedCells`,
+          });
+        }
+      });
+    });
+  });
 
 export type ProfileConfig = z.infer<typeof ProfileConfigSchema>;
 

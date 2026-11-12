@@ -207,25 +207,3 @@ export class GuardrailBlockedError extends BioCoreError {
     this.safetyScore = safetyScore;
   }
 }
-
-export class HeadlessEscalationError extends BioCoreError {
-  /** Instrucción original que no pudo resolverse sin LLM */
-  readonly instruction: string;
-  /** Confianza de Jev en el routing (undefined si Jev no estaba disponible) */
-  readonly jevConfidence?: number;
-
-  constructor(instruction: string, reason: string, jevConfidence?: number) {
-    super(
-      `HeadlessOrchestrator no puede resolver la tarea sin LLM: ${reason}`,
-      "HEADLESS_ESCALATION",
-      {
-        instruction: instruction.substring(0, 200),
-        reason,
-        ...(jevConfidence !== undefined && { jevConfidence }),
-      },
-    );
-    this.name = "HeadlessEscalationError";
-    this.instruction = instruction;
-    this.jevConfidence = jevConfidence;
-  }
-}
