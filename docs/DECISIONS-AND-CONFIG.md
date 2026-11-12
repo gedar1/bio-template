@@ -139,6 +139,7 @@ Hay dos tipos de base, y cada dato va en una sola:
 
 ---
 
+
 ### 3.12 Cadenas declaradas en el perfil
 
 **Decisión:** las cadenas que el gate ejecuta sin LLM se declaran en `config/domain-profile.ts`, en el campo `chains`. El motor las ejecuta con `system/chainRunner.ts` y no conoce sus nombres. Se descartaron las funciones dentro del perfil para mantener la configuración declarativa.
@@ -156,6 +157,19 @@ Hay dos tipos de base, y cada dato va en una sola:
 **Decisión:** se borraron las tres filas de seed (`id` 1 a 3). Se conservaron las dos filas de uso real del chat (`id` 4 y 5). La copia de seguridad está en `data/backups/biocore-before-reflex-cleanup-2026-11-07T23-32-56-088Z.db`.
 
 **Pendiente:** la columna `schema_versions` se conserva por decisión. Ver sección 6.
+
+### 3.15 `db_query` es de solo lectura
+
+**Decisión:** `db_query` ejecuta solo consultas que empiezan con `SELECT` o `WITH`. Corre en una conexión SQLite `readonly`. Las herramientas tipadas (`db_insert`, `db_find`, y las operaciones de `SQLiteMolecule`) validan los nombres de tabla y columna antes de armar el SQL.
+
+**Motivo:** antes, el LLM podía ejecutar cualquier SQL con `db_query`. Se comprobó que permitía `DELETE`, `DROP`, `UPDATE` y `ATTACH`. Con `ATTACH` se leía la base de otro tenant. Un texto scrapeado de una página podía inducir al LLM a borrar datos.
+
+**Cómo se verificó:** 36 comprobaciones contra el build compilado, con bases temporales. Incluye escrituras, `ATTACH` en comentarios, varias sentencias, inyección por nombre de columna y tabla, y regresión de `find`, `update` y `delete`. La suite de core pasa 45 de 45.
+
+**Limitación:** `better-sqlite3` no expone un autorizador, así que el bloqueo de `ATTACH` depende del validador de SQL (`atoms/sqlSafety.ts`). La conexión `readonly` es la segunda barrera.
+
+**Pendiente:** `db_delete` figura en el guardarraíl, pero no está registrada en `CellServer`. Revisar si se implementa con confirmación o se retira de la lista.
+
 
 ## 4. Configuración
 

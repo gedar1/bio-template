@@ -16,6 +16,12 @@ export interface IDatabase extends IMolecule {
   query(sql: string, params?: any[]): Promise<any[]>;
 
   /**
+   * Ejecuta una consulta de solo lectura (SELECT o WITH). Rechaza escrituras,
+   * ATTACH, PRAGMA y varias sentencias. Es lo que expone `db_query` al LLM.
+   */
+  queryReadOnly(sql: string, params?: any[]): Promise<any[]>;
+
+  /**
    * Inserta un documento/registro.
    */
   insert(table: string, data: Record<string, any>): Promise<any>;

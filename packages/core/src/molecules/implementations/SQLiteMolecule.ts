@@ -3,12 +3,21 @@ import { IDatabase } from "../interfaces/IDatabase.js";
 import { createLogger } from "../../config/logger.js";
 import { MoleculeError } from "../../errors.js";
 import { resolveDataPath } from "../../atoms/paths.js";
+import { checkReadOnlySql, isSqlIdentifier } from "../../atoms/sqlSafety.js";
 
 const log = createLogger("SQLite");
+
+/** Tipos de columna aceptados en createTable: palabras, paréntesis y comas. */
+const COLUMN_TYPE_PATTERN = /^[A-Za-z_][A-Za-z0-9_ (),]*$/;
 
 /**
  * Implementación SQLite de la interfaz IDatabase.
  * Usa better-sqlite3 (sincrónico, ultra-rápido, sin dependencias del sistema).
+ *
+ * Dos conexiones:
+ * - La escritura (`db`) la usan las herramientas tipadas (insert, update, delete).
+ * - La de solo lectura (`readonlyDb`) la usa `queryReadOnly`, que es lo que expone
+ *   `db_query` al LLM. Con SQLite en modo readonly no se puede escribir nada por esa vía.
  *
  * @example
  * const db = new SQLiteMolecule('./data.db');
@@ -20,6 +29,7 @@ export class SQLiteMolecule implements IDatabase {
   readonly name = "sqlite";
   readonly version = "1.0.0";
   private db: Database.Database | null = null;
+  private readonlyDb: Database.Database | null = null;
   readonly dbPath: string;
 
   constructor(dbPath: string = resolveDataPath("./data/biocore.db")) {
@@ -64,8 +74,42 @@ export class SQLiteMolecule implements IDatabase {
     }
   }
 
+  /**
+   * Ejecuta una consulta de solo lectura. Rechaza todo lo que no sea SELECT o WITH,
+   * ATTACH, PRAGMA o varias sentencias, y además corre en una conexión readonly.
+   */
+  async queryReadOnly(sql: string, params: any[] = []): Promise<any[]> {
+    if (!this.db)
+      throw new MoleculeError(
+        "sqlite",
+        "Base de datos no inicializada. Llama connect() primero.",
+      );
+
+    const check = checkReadOnlySql(sql);
+    if (!check.ok) {
+      throw new MoleculeError("sqlite", `Consulta rechazada: ${check.reason}`);
+    }
+
+    try {
+      const stmt = this.getReadOnlyHandle().prepare(sql);
+      if (!stmt.reader) {
+        throw new MoleculeError(
+          "sqlite",
+          "Consulta rechazada: la sentencia no devuelve filas",
+        );
+      }
+      return stmt.all(...params);
+    } catch (error: any) {
+      if (error instanceof MoleculeError) throw error;
+      throw new MoleculeError("sqlite", `Query error: ${error.message}`, {
+        sql,
+      });
+    }
+  }
+
   async insert(table: string, data: Record<string, any>): Promise<any> {
     const keys = Object.keys(data);
+    this.assertIdentifiers(table, keys);
 
     // Auto-crear tabla si no existe, infiriendo columnas del data
     const columnDefs = keys
@@ -88,13 +132,14 @@ export class SQLiteMolecule implements IDatabase {
   }
 
   async find(table: string, filter?: Record<string, any>): Promise<any[]> {
+    const filterKeys = filter ? Object.keys(filter) : [];
+    this.assertIdentifiers(table, filterKeys);
+
     let sql = `SELECT * FROM ${table}`;
     const params: any[] = [];
 
-    if (filter && Object.keys(filter).length > 0) {
-      const conditions = Object.keys(filter)
-        .map((key) => `${key} = ?`)
-        .join(" AND ");
+    if (filter && filterKeys.length > 0) {
+      const conditions = filterKeys.map((key) => `${key} = ?`).join(" AND ");
       sql += ` WHERE ${conditions}`;
       params.push(...Object.values(filter));
     }
@@ -107,6 +152,11 @@ export class SQLiteMolecule implements IDatabase {
     filter: Record<string, any>,
     data: Record<string, any>,
   ): Promise<number> {
+    this.assertIdentifiers(table, [
+      ...Object.keys(data),
+      ...Object.keys(filter),
+    ]);
+
     const setClause = Object.keys(data)
       .map((key) => `${key} = ?`)
       .join(", ");
@@ -122,6 +172,8 @@ export class SQLiteMolecule implements IDatabase {
   }
 
   async delete(table: string, filter: Record<string, any>): Promise<number> {
+    this.assertIdentifiers(table, Object.keys(filter));
+
     const whereClause = Object.keys(filter)
       .map((key) => `${key} = ?`)
       .join(" AND ");
@@ -132,6 +184,10 @@ export class SQLiteMolecule implements IDatabase {
   }
 
   async close(): Promise<void> {
+    if (this.readonlyDb) {
+      this.readonlyDb.close();
+      this.readonlyDb = null;
+    }
     if (this.db) {
       this.db.close();
       this.db = null;
@@ -146,6 +202,13 @@ export class SQLiteMolecule implements IDatabase {
     tableName: string,
     schema: Record<string, string>,
   ): Promise<void> {
+    this.assertIdentifiers(tableName, Object.keys(schema));
+    for (const type of Object.values(schema)) {
+      if (!COLUMN_TYPE_PATTERN.test(type)) {
+        throw new MoleculeError("sqlite", `Tipo de columna no válido: ${type}`);
+      }
+    }
+
     const columns = Object.entries(schema)
       .map(([name, type]) => `${name} ${type}`)
       .join(", ");
@@ -153,5 +216,31 @@ export class SQLiteMolecule implements IDatabase {
     const sql = `CREATE TABLE IF NOT EXISTS ${tableName} (${columns})`;
     await this.query(sql);
     log.info({ table: tableName }, "Tabla creada/verificada");
+  }
+
+  /** Conexión de solo lectura, abierta bajo demanda sobre el mismo archivo. */
+  private getReadOnlyHandle(): Database.Database {
+    if (!this.readonlyDb) {
+      this.readonlyDb = new Database(this.dbPath, {
+        readonly: true,
+        fileMustExist: true,
+      });
+    }
+    return this.readonlyDb;
+  }
+
+  /** Rechaza nombres de tabla o columna que no sean identificadores simples. */
+  private assertIdentifiers(table: string, columns: string[]): void {
+    if (!isSqlIdentifier(table)) {
+      throw new MoleculeError("sqlite", `Nombre de tabla no válido: ${table}`);
+    }
+    for (const column of columns) {
+      if (!isSqlIdentifier(column)) {
+        throw new MoleculeError(
+          "sqlite",
+          `Nombre de columna no válido: ${column}`,
+        );
+      }
+    }
   }
 }

@@ -376,8 +376,13 @@ export function providerError(
   const message =
     error instanceof Error ? error.message : "Error de transporte del provider";
   const errorMessage = message.toLowerCase();
+  // Gemini responde 400 cuando la clave no es válida. Es un fallo de autenticación,
+  // así que debe permitir pasar al siguiente proveedor.
+  const invalidKey =
+    (status === 400 || status === undefined) &&
+    /api key not valid|api_key_invalid|invalid api key/.test(errorMessage);
   const category =
-    status === 401 || status === 403
+    status === 401 || status === 403 || invalidKey
       ? "authentication"
       : status === 429
         ? "rate_limit"

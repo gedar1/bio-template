@@ -270,7 +270,10 @@ export class UnifiedCortex extends BaseOrchestrator {
       });
     }
 
-    let effectsStarted = await this.preRoute(cleanText);
+    // El pre-routing cambia la célula dentro de este proceso, sin efectos externos.
+    // No cuenta como efecto: solo lo marcan las herramientas que se ejecutan.
+    await this.preRoute(cleanText);
+    let effectsStarted = false;
     this.addHistoryMessage(this.getSessionId(), {
       role: "user",
       content: cleanText,
@@ -368,15 +371,10 @@ export class UnifiedCortex extends BaseOrchestrator {
             index === chain.length - 1 &&
             attempts.length > 1
           ) {
-            throw new ProviderError(
-              "all",
+            throw this.allProvidersFailedError(
+              attempts,
               normalized.category,
-              "Todos los providers fallaron",
-              {
-                status: normalized.status,
-                retryable: false,
-                attempts,
-              },
+              normalized.status,
             );
           }
           if (attempts.length > 1 && normalized.retryable && effectsStarted) {
@@ -396,9 +394,38 @@ export class UnifiedCortex extends BaseOrchestrator {
       }
     }
 
-    throw new ProviderError("all", "internal", "Todos los providers fallaron", {
+    throw this.allProvidersFailedError(attempts, "internal");
+  }
+
+  /**
+   * Error final cuando ningún proveedor respondió. Si todos fallaron por falta de API key,
+   * lo dice explícitamente para que quien usa el chat sepa qué configurar.
+   */
+  private allProvidersFailedError(
+    attempts: ReadonlyArray<{
+      provider: LLMProviderName;
+      category: ProviderError["category"];
+      status?: number;
+      message: string;
+    }>,
+    category: ProviderError["category"],
+    status?: number,
+  ): ProviderError {
+    if (
+      attempts.length > 0 &&
+      attempts.every((attempt) => attempt.category === "missing_key")
+    ) {
+      return new ProviderError(
+        "all",
+        "missing_key",
+        "No hay ningún proveedor de LLM configurado. Agrega una API key en .env (GOOGLE_API_KEY, ANTHROPIC_API_KEY o NVIDIA_API_KEY).",
+        { retryable: false, attempts: [...attempts] },
+      );
+    }
+    return new ProviderError("all", category, "Todos los providers fallaron", {
+      ...(status !== undefined ? { status } : {}),
       retryable: false,
-      attempts,
+      attempts: [...attempts],
     });
   }
 
