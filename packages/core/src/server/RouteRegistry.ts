@@ -22,7 +22,10 @@ import { setupMonitorRoutes } from "./routes/MonitorRoutes.js";
 import { setupRoleRoutes } from "./routes/RoleRoutes.js";
 import { setupTemplateRoutes } from "./routes/TemplateRoutes.js";
 import { setupReflexRoutes } from "./routes/ReflexRoutes.js";
-import { setupCircuitBreakerRoutes } from "./routes/CircuitBreakerRoutes.js";
+import {
+  setupCircuitBreakerRoutes,
+  toCircuitBreakerStatuses,
+} from "./routes/CircuitBreakerRoutes.js";
 import { setupMutationRoutes } from "./routes/MutationRoutes.js";
 import { setupRegistryRoutes } from "./routes/RegistryRoutes.js";
 import { setupWebSocketRoutes } from "./routes/WebSocketRoutes.js";
@@ -94,7 +97,16 @@ const ROUTE_REGISTRATIONS: RouteRegistration[] = [
     name: "Reflex",
     setup: (s, d) => setupReflexRoutes(s, d.reflexMolecule, d.perfMonitor),
   },
-  { name: "CircuitBreaker", setup: (s) => setupCircuitBreakerRoutes(s, []) },
+  {
+    name: "CircuitBreaker",
+    setup: (s, d) =>
+      setupCircuitBreakerRoutes(s, () =>
+        toCircuitBreakerStatuses(
+          d.tenantManager.getCircuitBreakerSnapshot(),
+          d.tenantManager.getProviderConfig().primaryProvider,
+        ),
+      ),
+  },
   {
     name: "Mutation",
     setup: (s, d) => setupMutationRoutes(s, d.tenantManager),
