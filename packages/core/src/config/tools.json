@@ -1,7 +1,7 @@
 {
   "db_insert": "Inserta un registro en una tabla",
   "db_find": "Busca registros en una tabla según filtros",
-  "db_query": "Ejecuta una query SQL personalizada",
+  "db_query": "Consulta de solo lectura sobre la base del tenant (SELECT o WITH). No escribe ni borra datos",
 
   "scrape_url": "Extrae datos de una URL. Si no se indica schema, extrae título y texto completo de la página",
   "extract_links": "Extrae todos los links de una página",
