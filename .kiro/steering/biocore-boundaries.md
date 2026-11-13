@@ -35,3 +35,17 @@ Atoms → Molecules → Cells → Organisms → Orchestrator / Cortex
 ## Regla de decisión
 
 Antes de agregar código a una capa, pregunta: ¿es una transformación pura (atom), una capacidad con recursos (molecule), un adaptador MCP (cell), un controlador de proceso (organism), una política intercambiable (strategy), una entrada de transporte (server) o configuración? Si pertenece a otra categoría, muévelo en lugar de ampliar la capa equivocada.
+
+## Estándares de código
+
+Aplican a todo el código de `core` y al de cada vertical:
+
+- **TypeScript estricto.** Sin `any`. Usa `unknown` y estrechamiento de tipos.
+- **Zod en los bordes.** Valida argumentos de herramientas, respuestas de endpoints y respuestas de proveedores de LLM. Dentro de la lógica confía en los tipos ya validados.
+- **Logs con Pino.** `createLogger("Componente")`. No uses `console.log` en `core`.
+- **Errores tipados.** `BioCoreError` o una subclase (`MoleculeError`, `ToolExecutionError`, `ProviderError`). No lances `new Error` genérico en `core`.
+- **ESM.** Los imports llevan extensión `.js`.
+- **Nombres.** Moléculas en PascalCase con sufijo `Molecule`. Interfaces con prefijo `I`. Átomos en camelCase con verbo. Constantes en UPPER_SNAKE.
+- **Funciones pequeñas.** Una responsabilidad por función. Los atoms no tienen efectos.
+- **Sin código muerto.** Si algo queda sin uso, se elimina en el mismo cambio. No se deja comentado.
+- **Pruebas por capa.** `packages/core/tests/<capa>/`. Cada cambio de seguridad trae pruebas de los casos negativos.
