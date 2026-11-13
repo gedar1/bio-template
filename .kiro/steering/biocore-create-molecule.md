@@ -17,6 +17,11 @@ Una molecule encapsula una capacidad de negocio o de integración. Una cell la u
 7. Registra una herramienta MCP por operación pública en `registerTools`. La herramienta valida argumentos, llama al método de la molecule y serializa el resultado. No mueve lógica de negocio al handler.
 8. Declara el `type` y los nombres exactos de las tools en `domain-registry.json`. El motor (`registry.json`) no se modifica desde el template.
 9. Crea las pruebas en `packages/core/tests/molecules/<Nombre>Molecule.spec.ts`. Usa recursos temporales y llama a `dispose()` en `afterEach`.
+10. SQL y acceso a datos:
+    - Una consulta libre que llega desde el LLM o un cliente va por `queryReadOnly` (solo `SELECT` o `WITH`, en conexión `readonly`). Nunca por `query`.
+    - `query` es solo para SQL fijo escrito en el código, con parámetros `?`.
+    - Los nombres de tabla y columna que llegan desde fuera se validan con `isSqlIdentifier` (`atoms/sqlSafety.ts`) antes de interpolarlos en el SQL. Los valores siempre van como parámetros.
+    - Una herramienta nueva que exponga SQL libre necesita pruebas de los casos negativos: escritura, `ATTACH`, `PRAGMA` y varias sentencias.
 
 ## Checklist
 
@@ -24,6 +29,7 @@ Una molecule encapsula una capacidad de negocio o de integración. Una cell la u
 - [ ] Ninguna dependencia entre molecules.
 - [ ] Célula, registry y nombres de tools alineados.
 - [ ] BD, archivos y clientes se cierran en `dispose()`.
+- [ ] SQL libre solo por `queryReadOnly`; nombres de tabla y columna validados.
 - [ ] `npx tsc --noEmit` y `npx vitest --run --config packages/core/vitest.config.ts` pasan.
 
 ## Relaciones
