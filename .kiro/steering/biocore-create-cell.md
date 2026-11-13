@@ -25,6 +25,10 @@ Un tipo solo se anuncia en `stimulate_differentiation` si cumple tres condicione
    - `registerTools(server, context)`: llama `server.registerTool(nombre, { description, inputSchema }, handler)` por cada tool. Dentro de un handler, obtén la molecule con `context.getResource<T>(key)`.
 4. Si el tipo hereda de otro, declara `parent` en el registry. Al mutar, `activateTypes` activa primero la cadena del padre, pero solo los tipos que tienen registro. Un tipo con padre sin registro no se anuncia.
 5. Si la capacidad es genérica del motor y no del proyecto, usa el procedimiento de core: entrada en `registry.json` y objeto en `builtIns` de `CellServer.ts`.
+6. Agrega cada herramienta a `packages/core/src/config/tools.json` con una descripción clara. El catálogo de Jev (`config/toolCatalog.ts`) lee ese archivo: sin entrada, Jev nunca propone la herramienta, aunque el LLM sí la vea. Los nombres deben coincidir con los de `registerTool`. El validador de contrato lo comprueba.
+7. Si la herramienta modifica datos fuera de la conversación (borrar, escribir archivos, enviar mensajes o llamar APIs que escriben), agrégala a `GUARDED_TOOLS` en `packages/core/src/atoms/executionGuardrail.ts` con nivel `high` o `critical`. Una herramienta protegida que no está registrada en ninguna célula no protege nada: revisa que ambas listas coincidan.
+8. Define esquemas de entrada con tipos concretos. No uses `z.array(z.any())` ni `z.record(z.any())` en parámetros que el LLM debe llenar. El conversor a JSON Schema deja los arrays sin `items`, y el validador de proveedores rechaza toda la lista de herramientas. Para parámetros variables, usa `z.array(z.string())` y describe el formato en `.describe()`.
+9. Describe en `tools.json` y en `registerTool` qué hace la herramienta y qué no hace, con un ejemplo válido. El LLM elige por esa descripción. Así evitamos intentos con sintaxis no permitida, como `PRAGMA` en `db_query`.
 
 ## Qué no va en la célula
 

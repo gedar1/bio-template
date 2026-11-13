@@ -13,7 +13,7 @@ Un atom es una función pequeña y determinista para una transformación reutili
 3. No importes desde `molecules`, `cells`, `organisms`, `server` o `system`. Si la función necesita IO o una dependencia viva, no es un atom: extrae un atom puro y deja la integración a una molecule o strategy.
 4. Exporta el atom desde `packages/core/src/atoms/index.ts` cuando deba ser consumido por otras capas. No modifiques un barrel sin comprobar sus exports existentes.
 5. Añade JSDoc con el contrato, casos límite y un ejemplo cuando la función tenga una semántica no obvia.
-6. Crea `packages/core/tests/atoms/<nombre>.spec.ts` siguiendo el patrón de `packages/core/tests/atoms/atoms.spec.ts`. Prueba resultado normal, entradas límite y que la función no dependa de orden o estado previo.
+6. Crea `packages/core/tests/atoms/<nombre>.spec.ts`. No hay un archivo de pruebas compartido para atoms: usa `tests/atoms/reflexSelector-execution-chain.spec.ts` como referencia de estilo. Prueba resultado normal, entradas límite y que la función no dependa de orden o estado previo.
 
 ## Integración y comprobación
 
@@ -24,3 +24,5 @@ Un atom es una función pequeña y determinista para una transformación reutili
 ## En bio-template
 
 El motor del template ya contiene atoms en `packages/core/src/atoms/`. No los edites para resolver lógica de dominio: un atom específico puede vivir allí si es una utilidad pura compartida por el proyecto, mientras que la operación de negocio debe quedarse en `ExampleMolecule.ts` renombrada.
+
+Ejemplo de atom puro con validación: `atoms/sqlSafety.ts`. Recibe texto, devuelve un resultado explícito (`{ ok: true }` o `{ ok: false, reason }`) y no tiene efectos. Lo usan `SQLiteMolecule` y las herramientas de base de datos.
