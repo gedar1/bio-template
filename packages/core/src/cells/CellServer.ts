@@ -618,7 +618,7 @@ export class CellServer implements ICell {
       "db_query",
       {
         description:
-          "Consulta de solo lectura sobre la base del tenant (SELECT o WITH). No permite escribir, borrar ni adjuntar otras bases.",
+          "Consulta de solo lectura sobre la base del tenant (SELECT o WITH). No permite escribir, borrar ni adjuntar otras bases. Para listar tablas usa SELECT name FROM sqlite_master WHERE type='table'. Para ver columnas usa SELECT name FROM pragma_table_info('nombre_tabla'). No uses PRAGMA ni otras sentencias.",
         inputSchema: {
           sql: z.string(),
           params: z

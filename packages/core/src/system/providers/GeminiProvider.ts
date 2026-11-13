@@ -93,7 +93,14 @@ function projectMessages(messages: readonly LLMMessage[]): GeminiProjection {
   let lastToolResultIndex = -1;
 
   for (const message of nonSystem) {
-    const role = message.role === "assistant" ? "model" : "user";
+    // Los resultados de herramientas van en un turno "function". Gemini rechaza
+    // functionResponse dentro de un turno "user" cuando viene del historial.
+    const role =
+      message.role === "assistant"
+        ? "model"
+        : message.role === "tool"
+          ? "function"
+          : "user";
     const parts: UnknownRecord[] = [];
     if (message.role === "user") {
       parts.push({ text: message.content });
